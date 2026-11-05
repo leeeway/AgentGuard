@@ -45,21 +45,40 @@ def config(root):
         raise ValueError('Run agentguard init in this directory first.')
     with path.open('rb') as stream:
         data = tomllib.load(stream)
+    for section in ('safety', 'snapshots'):
+        if not isinstance(data.get(section, {}), dict):
+            raise ValueError(f'{section} must be a TOML table')
     safety = data.get('safety', {})
     if safety.get('dangerous_commands', 'block') not in ('block', 'ask', 'warn'):
         raise ValueError('Invalid dangerous_commands mode')
-    for pattern in safety.get('blocked_patterns', []):
-        re.compile(pattern)
+    patterns = safety.get('blocked_patterns', [])
+    if not isinstance(patterns, list) or any(not isinstance(p, str) for p in patterns):
+        raise ValueError('safety.blocked_patterns must be an array of strings')
+    for index, pattern in enumerate(patterns, 1):
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(f'Invalid safety rule {index}: {exc.msg}') from exc
     maximum = data.get('snapshots', {}).get('max_history', 30)
     if type(maximum) is not int or maximum < 1:
         raise ValueError('max_history must be a positive integer')
     return data
 
 
-def dangerous(command, settings):
-    # Inspect shell arguments too; this is only a heuristic on the launch command.
+def evaluate(command, settings):
+    """Explain launch checks without executing the command or exposing arguments."""
+    safety = settings.get('safety', {})
+    mode = safety.get('dangerous_commands', 'block')
+    patterns = safety.get('blocked_patterns', [])
     rendered = shlex.join(command) + '\n' + ' '.join(command)
-    return any(re.search(p, rendered) for p in settings.get('safety', {}).get('blocked_patterns', []))
+    matched = [index for index, pattern in enumerate(patterns, 1) if re.search(pattern, rendered)]
+    decision = {'block': 'blocked', 'ask': 'confirmation-required', 'warn': 'warning'}[mode] if matched else 'allowed'
+    return {'decision': decision, 'mode': mode, 'matched_rules': matched,
+            'rule_count': len(patterns), 'scope': 'launch-command'}
+
+
+def dangerous(command, settings):
+    return bool(evaluate(command, settings)['matched_rules'])
 
 
 def capture(root):

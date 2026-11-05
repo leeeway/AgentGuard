@@ -44,10 +44,12 @@ def run(command, python_hooks, node_hooks, rollback_on_failure):
     directory = core.store(root)
     # Exclusive lock prevents concurrent sessions and undo in this workspace.
     with workspace_lock(directory):
-        if core.dangerous(command, settings):
-            mode = settings.get('safety', {}).get('dangerous_commands', 'block')
+        evaluation = core.evaluate(command, settings)
+        if evaluation['matched_rules']:
+            mode = evaluation['mode']
+            rules = ', '.join(map(str, evaluation['matched_rules']))
             if mode == 'block':
-                raise click.ClickException('Launch command blocked by safety rules.')
+                raise click.ClickException(f'Launch command blocked by safety rules: {rules}.')
             if mode == 'ask' and not click.confirm('Potentially destructive launch command. Continue?', default=False):
                 raise click.ClickException('Launch cancelled.')
             click.echo('Warning: potentially destructive launch command.', err=True)
@@ -189,6 +191,21 @@ def garbage_collect(dry_run):
         count, size = objects.collect(root, dry_run=dry_run)
     action = 'Would remove' if dry_run else 'Removed'
     click.echo(f'{action} {count} unreferenced objects ({size} bytes).')
+
+
+@main.command('check', context_settings={'ignore_unknown_options': True})
+@click.option('--json', 'as_json', is_flag=True, help='Emit the decision and matching rule numbers as JSON.')
+@click.argument('command', nargs=-1, type=click.UNPROCESSED, required=True)
+def check_command(as_json, command):
+    """Explain launch rules without executing a command or creating a snapshot."""
+    result = core.evaluate(command, core.config(Path.cwd()))
+    if as_json:
+        click.echo(json.dumps(result))
+    else:
+        rules = ', '.join(map(str, result['matched_rules'])) or 'none'
+        click.echo(f"Decision: {result['decision']}; mode: {result['mode']}; matched rules: {rules}")
+        click.echo(f"Scope: launch command only; {result['rule_count']} configured rules. Command was not executed.")
+    raise click.exceptions.Exit({'blocked': 3, 'confirmation-required': 4}.get(result['decision'], 0))
 
 
 if __name__ == '__main__':

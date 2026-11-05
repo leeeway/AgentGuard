@@ -38,6 +38,19 @@
 
 初始化默认使用 `dangerous_commands = "block"`，支持 `block`、`ask`、`warn`，`blocked_patterns` 为 Python 正则列表。`snapshots.max_history` 默认为 30，按会话数量保留历史。下文的 privacy 配置和 auto_snapshot 选项属于规划，当前不生效；当前始终创建会话快照。
 
+### 执行前检查与规则解释
+
+```bash
+agentguard check -- rm -rf build
+agentguard check --json -- git push --force origin main
+```
+
+`check` 使用与 `run` 相同的启动命令评估逻辑，不执行目标命令、不创建快照、不写入历史，也不会弹出确认。输出决策、配置模式、所有命中的规则编号和总规则数；编号对应 `blocked_patterns` 数组，从 1 开始。不会回显命令参数或规则内容。
+
+退出码：0 表示 allowed 或 warning（通过 JSON 的 decision 区分）；3 表示 blocked；4 表示 confirmation-required；1 表示配置或读取错误；2 表示 CLI 用法错误。CI 可据此决定是否继续。`ask` 的检查结果不会替用户批准实际运行。
+
+它只预测启动命令检查，不模拟 shell 展开、子进程或文件访问，allowed 不代表安全证明。空规则列表显示 rule_count=0；缺失 `blocked_patterns` 也视为空列表，不隐式恢复默认规则。配置中的 safety/snapshots 必须是 TOML 表，规则必须是字符串数组，正则必须有效，max_history 必须是正整数。配置验证失败时拒绝启动命令。
+
 ### 失败自动恢复（可选）
 
 ```bash
@@ -289,6 +302,7 @@ max_history = 30
 ## 🗺️ Roadmap / 路线图
 
 - [x] CLI 骨架与核心规则拦截引擎
+- [x] 执行前规则解释、JSON 决策输出与配置类型校验
 - [x] 会话级完整快照与带冲突检查的 `agentguard undo` 回滚
 - [x] 回滚预览、快照结构校验和只读目录恢复
 - [x] 可选失败自动恢复，保留退出码与失败差异审计
