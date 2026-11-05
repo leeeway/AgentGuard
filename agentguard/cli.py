@@ -8,7 +8,7 @@ import uuid
 
 import click
 
-from . import core, runtime, inspection, objects, inventory
+from . import core, runtime, inspection, objects, inventory, diagnostics
 
 
 class GuardGroup(click.Group):
@@ -224,6 +224,25 @@ def snapshot_plan(as_json):
         for issue in result['issues']:
             click.echo('Issue: ' + json.dumps(issue, ensure_ascii=False))
     raise click.exceptions.Exit(0 if result['ready'] else 3)
+
+
+@main.command('doctor')
+@click.option('--json', 'as_json', is_flag=True, help='Emit structured health checks and suggested actions.')
+def doctor(as_json):
+    """Diagnose configuration and retained snapshots without changing files."""
+    report = diagnostics.inspect(Path.cwd())
+    if as_json:
+        click.echo(json.dumps(report, ensure_ascii=False))
+    else:
+        click.echo(f"Health: {report['status']}; errors: {report['errors']}; warnings: {report['warnings']}")
+        for row in report['checks']:
+            # JSON quoting prevents filenames and error messages injecting terminal controls.
+            click.echo(f"[{row['level']}] {row['code']}: " + json.dumps(row['message'], ensure_ascii=True))
+            if 'session' in row:
+                click.echo('  Session: ' + json.dumps(row['session'], ensure_ascii=True))
+            if 'action' in row:
+                click.echo('  ' + row['action'])
+    raise click.exceptions.Exit(1 if report['errors'] else 3 if report['warnings'] else 0)
 
 
 if __name__ == '__main__':

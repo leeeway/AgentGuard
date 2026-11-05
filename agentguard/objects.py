@@ -12,6 +12,8 @@ def directory(root):
     path = store(root) / 'objects'
     if path.is_symlink():
         raise ValueError('Object directory must not be a symbolic link')
+    if path.exists() and not path.is_dir():
+        raise ValueError('Object storage must be a directory')
     return path
 
 

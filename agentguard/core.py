@@ -121,6 +121,8 @@ def snapshot_directory(root):
     directory = store(root) / 'snapshots'
     if directory.is_symlink():
         raise ValueError('Snapshot directory must not be a symbolic link')
+    if directory.exists() and not directory.is_dir():
+        raise ValueError('Snapshot storage must be a directory')
     return directory
 
 
@@ -143,20 +145,21 @@ def save(root, record):
         temporary.unlink(missing_ok=True)
 
 
+def load_record(root, path):
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Snapshot record must be a regular file')
+    try:
+        record = objects.unpack(root, json.loads(path.read_text()))
+        validation.record(record)
+        if path.stem != record['id']:
+            raise ValueError('Snapshot filename does not match its identifier')
+    except ValueError as exc:
+        raise ValueError(f'Invalid snapshot {path.name}: {exc}') from exc
+    return record
+
+
 def records(root):
-    result = []
-    for path in sorted(snapshot_directory(root).glob('*.json')):
-        if path.is_symlink() or not path.is_file():
-            raise ValueError('Snapshot record must be a regular file')
-        try:
-            record = objects.unpack(root, json.loads(path.read_text()))
-            validation.record(record)
-            if path.stem != record['id']:
-                raise ValueError('Snapshot filename does not match its identifier')
-        except ValueError as exc:
-            raise ValueError(f'Invalid snapshot {path.name}: {exc}') from exc
-        result.append(record)
-    return result
+    return [load_record(root, path) for path in sorted(snapshot_directory(root).glob('*.json'))]
 
 
 def changes(before, after):
