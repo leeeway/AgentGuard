@@ -8,7 +8,7 @@ import uuid
 
 import click
 
-from . import core, runtime, inspection, objects
+from . import core, runtime, inspection, objects, inventory
 
 
 class GuardGroup(click.Group):
@@ -59,7 +59,7 @@ def run(command, python_hooks, node_hooks, rollback_on_failure):
             'started_at': datetime.now(timezone.utc).isoformat(),
             'hooks': [name for name, enabled in [('python', python_hooks), ('node', node_hooks)] if enabled],
             'automatic_rollback': 'pending' if rollback_on_failure else 'disabled',
-            'before': core.capture(root),
+            'before': core.capture(root, settings),
         }
         core.save(root, record)
         try:
@@ -74,7 +74,7 @@ def run(command, python_hooks, node_hooks, rollback_on_failure):
             raise
         finally:
             record['finished_at'] = datetime.now(timezone.utc).isoformat()
-            record['after'] = core.capture(root)
+            record['after'] = core.capture(root, settings)
             core.save(root, record)
         if rollback_on_failure and code != 0:
             try:
@@ -206,6 +206,24 @@ def check_command(as_json, command):
         click.echo(f"Decision: {result['decision']}; mode: {result['mode']}; matched rules: {rules}")
         click.echo(f"Scope: launch command only; {result['rule_count']} configured rules. Command was not executed.")
     raise click.exceptions.Exit({'blocked': 3, 'confirmation-required': 4}.get(result['decision'], 0))
+
+
+@main.command('snapshot-plan')
+@click.option('--json', 'as_json', is_flag=True, help='Emit inventory and budget violations as JSON.')
+def snapshot_plan(as_json):
+    """Estimate snapshot input size without reading file contents or writing a snapshot."""
+    root = Path.cwd()
+    result = inventory.plan(root, core.config(root))
+    if as_json:
+        click.echo(json.dumps(result, ensure_ascii=False))
+    else:
+        click.echo(f"Files: {result['files']}; directories: {result['directories']}; symlinks: {result['symlinks']}")
+        click.echo(f"Input bytes: {result['total_bytes']}; ready: {result['ready']}")
+        if result['largest_file']:
+            click.echo('Largest file: ' + json.dumps(result['largest_file'], ensure_ascii=False))
+        for issue in result['issues']:
+            click.echo('Issue: ' + json.dumps(issue, ensure_ascii=False))
+    raise click.exceptions.Exit(0 if result['ready'] else 3)
 
 
 if __name__ == '__main__':

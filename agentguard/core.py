@@ -8,7 +8,7 @@ import shlex
 import stat
 import uuid
 
-from . import validation, objects
+from . import validation, objects, inventory
 
 try:
     import tomllib
@@ -62,6 +62,10 @@ def config(root):
     maximum = data.get('snapshots', {}).get('max_history', 30)
     if type(maximum) is not int or maximum < 1:
         raise ValueError('max_history must be a positive integer')
+    for key in ('max_file_bytes', 'max_total_bytes'):
+        limit = data.get('snapshots', {}).get(key)
+        if limit is not None and (type(limit) is not int or limit < 1):
+            raise ValueError(f'snapshots.{key} must be a positive integer')
     return data
 
 
@@ -81,25 +85,35 @@ def dangerous(command, settings):
     return bool(evaluate(command, settings)['matched_rules'])
 
 
-def capture(root):
+def capture(root, settings=None):
+    limits = (settings or {}).get('snapshots', {})
     result = {}
-    def visit(directory):
-        for path in sorted(directory.iterdir()):
-            if path.name in ('.git', '.agentguard'):
-                continue
-            key = path.relative_to(root).as_posix()
-            info = path.lstat()
-            mode = stat.S_IMODE(info.st_mode)
-            if path.is_symlink():
-                result[key] = {'kind': 'link', 'target': os.readlink(path)}
-            elif stat.S_ISDIR(info.st_mode):
-                result[key] = {'kind': 'dir', 'mode': mode}
-                visit(path)
-            elif stat.S_ISREG(info.st_mode):
-                result[key] = {'kind': 'file', 'mode': mode, 'data': base64.b64encode(path.read_bytes()).decode('ascii')}
-            else:
-                raise ValueError(f'Unsupported special file: {key}')
-    visit(root)
+    total = 0
+    for path, info in inventory.entries(root):
+        key = path.relative_to(root).as_posix()
+        mode = stat.S_IMODE(info.st_mode)
+        if stat.S_ISLNK(info.st_mode):
+            result[key] = {'kind': 'link', 'target': os.readlink(path)}
+        elif stat.S_ISDIR(info.st_mode):
+            result[key] = {'kind': 'dir', 'mode': mode}
+        elif stat.S_ISREG(info.st_mode):
+            available = []
+            if 'max_file_bytes' in limits:
+                available.append(limits['max_file_bytes'])
+            if 'max_total_bytes' in limits:
+                available.append(limits['max_total_bytes'] - total)
+            cap = min(available) if available else None
+            if cap is not None and info.st_size > cap:
+                raise ValueError(f'Snapshot byte budget exceeded at {json.dumps(key)}')
+            # Bound the read too, in case a file grows after lstat.
+            with open(path, 'rb', opener=lambda p, flags: os.open(p, flags | os.O_NOFOLLOW)) as stream:
+                content = stream.read(cap + 1) if cap is not None else stream.read()
+            if cap is not None and len(content) > cap:
+                raise ValueError(f'Snapshot byte budget exceeded at {json.dumps(key)}')
+            total += len(content)
+            result[key] = {'kind': 'file', 'mode': mode, 'data': base64.b64encode(content).decode('ascii')}
+        else:
+            raise ValueError(f'Unsupported special file: {json.dumps(key)}')
     return result
 
 
