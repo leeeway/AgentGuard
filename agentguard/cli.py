@@ -8,7 +8,7 @@ import uuid
 
 import click
 
-from . import core, runtime, inspection
+from . import core, runtime, inspection, objects
 
 
 class GuardGroup(click.Group):
@@ -156,6 +156,18 @@ def diff_command(session, contents, paths):
     record = inspection.select(core.records(root), session)
     output = inspection.diff(record, contents, paths)
     click.echo(output or 'No changes recorded.\n', nl=False)
+
+
+@main.command('gc')
+@click.option('--dry-run', is_flag=True, help='Preview unreferenced content without deleting it.')
+def garbage_collect(dry_run):
+    """Remove content objects no longer referenced by retained sessions."""
+    root = Path.cwd()
+    core.config(root)
+    with workspace_lock(core.store(root)):
+        count, size = objects.collect(root, dry_run=dry_run)
+    action = 'Would remove' if dry_run else 'Removed'
+    click.echo(f'{action} {count} unreferenced objects ({size} bytes).')
 
 
 if __name__ == '__main__':

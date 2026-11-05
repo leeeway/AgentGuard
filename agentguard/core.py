@@ -8,7 +8,7 @@ import shlex
 import stat
 import uuid
 
-from . import validation
+from . import validation, objects
 
 try:
     import tomllib
@@ -97,11 +97,12 @@ def save(root, record):
     directory.mkdir(mode=0o700, exist_ok=True)
     if not re.fullmatch(r'[0-9]{20}-[0-9a-f]{32}', record['id']):
         raise ValueError('Invalid snapshot identifier')
+    packed = objects.pack(root, record)
     path = directory / (record['id'] + '.json')
     temporary = directory / (uuid.uuid4().hex + '.tmp')
     try:
         with open(temporary, 'x', opener=lambda p, flags: os.open(p, flags, 0o600)) as stream:
-            json.dump(record, stream)
+            json.dump(packed, stream)
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)
@@ -115,7 +116,7 @@ def records(root):
         if path.is_symlink() or not path.is_file():
             raise ValueError('Snapshot record must be a regular file')
         try:
-            record = json.loads(path.read_text())
+            record = objects.unpack(root, json.loads(path.read_text()))
             validation.record(record)
             if path.stem != record['id']:
                 raise ValueError('Snapshot filename does not match its identifier')
