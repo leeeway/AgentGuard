@@ -23,6 +23,8 @@
 - `agentguard init`：创建配置，重复运行不会覆盖已有配置。
 - `agentguard run -- <command>`：按配置检查**启动命令**，保存执行前后快照，实际运行程序并传递退出码。
 - `agentguard status`：列出最近未撤销会话的新增、删除和修改路径。
+- `agentguard history`：查看会话状态、退出码和变更路径数量，支持 `--json`。
+- `agentguard diff`：查看最近一次会话的差异摘要，支持指定会话、路径和显式文本内容输出。
 - `agentguard undo` / `undo --all`：当前均撤销最近一次完整会话；再次执行可撤销更早的会话。若会话结束后相关文件又被修改，会拒绝整个撤销。
 
 **保护边界：**当前不是安全沙箱，默认不拦截子进程；可选 Python/Node.js Hook 只检查支持的进程启动事件，不拦截文件读取或网络访问，也没有凭据遮蔽功能。启动命令正则检查可以被绕过，不能用于运行不可信代码。会话期间请勿同时手动编辑工作区：快照无法区分同时发生的人为编辑和 Agent 编辑。后台进程必须在会话结束前退出。
@@ -56,6 +58,20 @@ agentguard run --python-hooks --node-hooks -- node agent_worker.js
 通过 `NODE_OPTIONS=--require=...` 加载 Hook，保留已有的 `NODE_OPTIONS`。检查 `child_process` 的 `spawn`、`spawnSync`、`exec`、`execSync`、`execFile`、`execFileSync` 和 `fork`，支持 CommonJS、ESM 和 `util.promisify(exec/execFile)`。继承环境的 Node.js 子进程会继续加载检查。命中规则时同步抛出带 `code = "AGENTGUARD_BLOCKED"` 的错误；Promise 包装会拒绝。`warn` 放行，`ask` 按拒绝处理。
 
 Node.js 使用 JavaScript 正则，Python 使用 Python 正则。同一份 `blocked_patterns` 必须兼容启用的运行时；例如 Python 的 `(?i)` 不能用于 Node.js。不兼容的正则会导致 Node.js 启动失败。Hook 检查命令和参数，不检查环境变量或 shell 展开后的内容。应用可替换 Hook、清除环境或直接调用原生接口绕过检查，因此不适用于隔离不可信代码。已有的 Node.js preload 也可能改变其行为。
+
+### 会话历史与差异审计
+
+```bash
+agentguard history                  # 最近 20 次会话，最新优先
+agentguard history --json --limit 5  # 机器可读元数据
+agentguard diff                      # 最近一次会话，包括已撤销会话
+agentguard diff --session <完整会话ID>
+agentguard diff --contents --path src/main.py
+```
+
+历史记录包括会话 ID、状态（complete / incomplete / undone）、UTC 开始与结束时间、退出码、启用的 Hook 和变更路径数量。旧快照缺少的元数据显示为空；没有成功取得进程退出状态时，退出码显示 unknown。只记录会话元数据，不保存启动命令参数。历史随 `max_history` 一同裁剪。
+
+`diff` 比较保存的执行前后快照，不读取当前工作区内容。默认只显示新增、删除、修改路径；`--contents` 显式显示 UTF-8 文本 unified diff、权限和符号链接目标，可能包含凭据，请按需使用。二进制内容省略，终端控制字符转义。`--path` 可重复，按工作区相对路径精确匹配。不完整会话没有最终差异；`--session` 使用完整会话 ID，不支持前缀匹配。目前未实现逐条命令持久审计日志。
 
 ### 开发验证
 
@@ -245,6 +261,8 @@ max_history = 30
 
 - [x] CLI 骨架与核心规则拦截引擎
 - [x] 会话级完整快照与带冲突检查的 `agentguard undo` 回滚
+- [x] 会话历史、JSON 元数据与按路径查看文本差异
+- [ ] 逐条命令持久审计日志
 - [ ] 增量快照、性能基准与步级回滚
 - [x] 可选 Python/Node.js 子进程 Hook 注入器（协作式命令检查）
 - [ ] macOS 顶部状态栏轻量监控指示灯（显示当前 Agent 危险等级）
