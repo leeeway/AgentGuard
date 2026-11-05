@@ -8,6 +8,8 @@ import shlex
 import stat
 import uuid
 
+from . import validation
+
 try:
     import tomllib
 except ImportError:
@@ -82,8 +84,16 @@ def capture(root):
     return result
 
 
-def save(root, record):
+def snapshot_directory(root):
     directory = store(root) / 'snapshots'
+    if directory.is_symlink():
+        raise ValueError('Snapshot directory must not be a symbolic link')
+    return directory
+
+
+def save(root, record):
+    validation.record(record)
+    directory = snapshot_directory(root)
     directory.mkdir(mode=0o700, exist_ok=True)
     if not re.fullmatch(r'[0-9]{20}-[0-9a-f]{32}', record['id']):
         raise ValueError('Invalid snapshot identifier')
@@ -92,27 +102,38 @@ def save(root, record):
     try:
         with open(temporary, 'x', opener=lambda p, flags: os.open(p, flags, 0o600)) as stream:
             json.dump(record, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
 
 
 def records(root):
-    return [json.loads(p.read_text()) for p in sorted((store(root) / 'snapshots').glob('*.json'))]
+    result = []
+    for path in sorted(snapshot_directory(root).glob('*.json')):
+        if path.is_symlink() or not path.is_file():
+            raise ValueError('Snapshot record must be a regular file')
+        try:
+            record = json.loads(path.read_text())
+            validation.record(record)
+            if path.stem != record['id']:
+                raise ValueError('Snapshot filename does not match its identifier')
+        except ValueError as exc:
+            raise ValueError(f'Invalid snapshot {path.name}: {exc}') from exc
+        result.append(record)
+    return result
 
 
 def changes(before, after):
     return sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
 
 
-def restore(root, record):
+def restore(root, record, dry_run=False):
+    validation.record(record)
     if 'after' not in record:
         raise ValueError('Session is incomplete; automatic undo cannot safely check for later edits.')
     before, after = record['before'], record['after']
-    for key in before.keys() | after.keys():
-        parts = key.split('/')
-        if not key or any(p in ('', '.', '..', '.git', '.agentguard') for p in parts):
-            raise ValueError('Unsafe path in snapshot')
     current = capture(root)
     touched = changes(before, after)
     conflicts = [k for k in touched if current.get(k) != after.get(k)]
@@ -129,6 +150,12 @@ def restore(root, record):
             conflicts.extend(k for k in current if k.startswith(key + '/') and k not in touched)
     if conflicts:
         raise ValueError('Undo refused: files changed after the session: ' + ', '.join(sorted(set(conflicts))))
+    if dry_run:
+        return touched
+    # Make affected existing directories traversable until restoration finishes.
+    for key in touched:
+        if current.get(key, {}).get('kind') == 'dir':
+            (root / key).chmod(current[key]['mode'] | 0o700)
     for key in sorted(touched, key=lambda k: (k.count('/'), k), reverse=True):
         path = root / key
         if path.is_symlink() or path.is_file():
@@ -143,12 +170,16 @@ def restore(root, record):
             continue
         path = root / key
         if entry['kind'] == 'dir':
-            path.mkdir(exist_ok=True)
+            path.mkdir(mode=0o700, exist_ok=True)
         elif entry['kind'] == 'link':
             path.symlink_to(entry['target'])
         else:
             path.write_bytes(base64.b64decode(entry['data']))
-        if entry['kind'] != 'link':
+        if entry['kind'] == 'file':
             path.chmod(entry['mode'])
+    # Apply restrictive directory modes after restoring all children.
+    for key in sorted(touched, key=lambda k: k.count('/'), reverse=True):
+        if before.get(key, {}).get('kind') == 'dir':
+            (root / key).chmod(before[key]['mode'])
     record['undone'] = True
     save(root, record)

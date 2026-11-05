@@ -88,7 +88,8 @@ def workspace_lock(directory):
 
 @main.command()
 @click.option('--all', 'undo_all', is_flag=True, help='Restore the latest session (currently one snapshot per session).')
-def undo(undo_all):
+@click.option('--dry-run', is_flag=True, help='Check conflicts and preview paths without changing files.')
+def undo(undo_all, dry_run):
     """Undo the latest session, refusing to overwrite subsequent edits."""
     root = Path.cwd()
     core.config(root)
@@ -97,7 +98,12 @@ def undo(undo_all):
         if not pending:
             click.echo('No sessions to undo.')
             return
-        core.restore(root, pending[-1])
+        touched = core.restore(root, pending[-1], dry_run=dry_run)
+        if dry_run:
+            for path in touched:
+                click.echo('would restore: ' + json.dumps(path, ensure_ascii=False))
+            click.echo(f'Undo preview: {len(touched)} paths; no files changed.')
+            return
     click.echo('Restored the latest session.')
 
 
