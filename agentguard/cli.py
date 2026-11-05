@@ -33,8 +33,9 @@ def init():
 
 @main.command(context_settings={'ignore_unknown_options': True})
 @click.option('--python-hooks', is_flag=True, help='Inject cooperative subprocess checks into Python interpreters.')
+@click.option('--node-hooks', is_flag=True, help='Inject cooperative child_process checks into Node.js.')
 @click.argument('command', nargs=-1, type=click.UNPROCESSED, required=True)
-def run(command, python_hooks):
+def run(command, python_hooks, node_hooks):
     """Check a launch command, snapshot the workspace, and execute it."""
     root = Path.cwd()
     settings = core.config(root)
@@ -48,11 +49,11 @@ def run(command, python_hooks):
             if mode == 'ask' and not click.confirm('Potentially destructive launch command. Continue?', default=False):
                 raise click.ClickException('Launch cancelled.')
             click.echo('Warning: potentially destructive launch command.', err=True)
-        click.echo('Session snapshots enabled. ' + ('Python subprocess hooks enabled; secret reads are not intercepted.' if python_hooks else 'Child commands and secret reads are not intercepted.'), err=True)
+        click.echo('Session snapshots enabled. ' + ('Opt-in runtime hooks enabled; secret reads are not intercepted.' if python_hooks or node_hooks else 'Child commands and secret reads are not intercepted.'), err=True)
         record = {'id': f'{time.time_ns():020d}-{uuid.uuid4().hex}', 'before': core.capture(root)}
         core.save(root, record)
         try:
-            result = subprocess.run(command, check=False, env=runtime.environment(settings) if python_hooks else None)
+            result = subprocess.run(command, check=False, env=runtime.environment(settings, python_hooks, node_hooks) if python_hooks or node_hooks else None)
             code = result.returncode
         finally:
             record['after'] = core.capture(root)
@@ -99,7 +100,7 @@ def status():
     core.config(root)
     history = core.records(root)
     click.echo(f'Sessions: {len(history)}')
-    click.echo('Protection: launch-command checks only; no child-process or credential interception.')
+    click.echo('Protection: launch-command checks; optional Python/Node hooks via run flags; no credential interception.')
     pending = [r for r in history if not r.get('undone')]
     if pending:
         record = pending[-1]

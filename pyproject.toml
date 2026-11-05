@@ -23,3 +23,6 @@ agentguard = "agentguard.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agentguard*"]
+
+[tool.setuptools.package-data]
+agentguard = ["hooks/*.cjs"]

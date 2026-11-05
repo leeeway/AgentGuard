@@ -6,13 +6,17 @@ import re
 import sys
 
 
-def environment(settings):
+def environment(settings, python_hooks=True, node_hooks=False):
     env = os.environ.copy()
     package = Path(__file__).resolve().parent
-    env['PYTHONPATH'] = os.pathsep.join(
-        [str(package / 'hooks'), str(package.parent)]
-        + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else [])
-    )
+    if python_hooks:
+        env['PYTHONPATH'] = os.pathsep.join(
+            [str(package / 'hooks'), str(package.parent)]
+            + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else [])
+        )
+    if node_hooks:
+        preload = '--require=' + json.dumps(str(package / 'hooks' / 'node.cjs'))
+        env['NODE_OPTIONS'] = preload + ' ' + env.get('NODE_OPTIONS', '')
     env['AGENTGUARD_POLICY'] = json.dumps(settings.get('safety', {}))
     return env
 
