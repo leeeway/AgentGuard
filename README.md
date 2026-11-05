@@ -38,6 +38,23 @@
 
 初始化默认使用 `dangerous_commands = "block"`，支持 `block`、`ask`、`warn`，`blocked_patterns` 为 Python 正则列表。`snapshots.max_history` 默认为 30，按会话数量保留历史。下文的 privacy 配置和 auto_snapshot 选项属于规划，当前不生效；当前始终创建会话快照。
 
+### 修改后自动验证
+
+```bash
+agentguard run --rollback-on-failure \
+  --verify 'python -m unittest discover -s tests' \
+  --verify 'python -m compileall -q src' \
+  -- python agent_worker.py
+```
+
+`--verify` 可重复指定：主命令成功后按顺序执行，首个非零退出就停止后续验证。主命令失败则跳过所有验证。验证使用同一工作目录和启用的 Python/Node.js Hook 环境，全部目标命令在主命令启动前完成规则检查。格式错误、空命令或被阻断的验证命令会阻止整个会话启动。
+
+验证参数按 shell 引号规则拆分，但不隐式启动 shell，不进行管道、重定向、变量或通配符展开；需要这些功能时显式使用 `sh -c '...'`。验证程序无法启动时视为退出 127。不要把不可信输入拼入验证命令。
+
+最终退出码来自主命令或首个失败的验证命令。默认保留失败改动；配合 `--rollback-on-failure` 时，验证失败会触发整个会话回滚，包括验证产生的文件。结束快照在所有已执行验证结束后保存，因此 `diff` 记录 Agent 与验证流程的合计改动。自动恢复的限制同下文。
+
+`history --json` 增加 `command_exit_code`（主命令退出码）和 `verification`（请求次数、已执行退出码、状态）。状态为 disabled、pending、skipped、passed 或 failed。不保存验证命令参数，验证程序自身的终端输出不做遮蔽。
+
 ### 执行前检查与规则解释
 
 ```bash
@@ -337,6 +354,7 @@ max_history = 30
 - [x] 会话级完整快照与带冲突检查的 `agentguard undo` 回滚
 - [x] 回滚预览、快照结构校验和只读目录恢复
 - [x] 可选失败自动恢复，保留退出码与失败差异审计
+- [x] 顺序验证命令、失败停止及验证失败自动恢复
 - [x] 会话历史、JSON 元数据与按路径查看文本差异
 - [ ] 逐条命令持久审计日志
 - [x] 内容寻址去重存储、旧快照兼容与垃圾回收预览

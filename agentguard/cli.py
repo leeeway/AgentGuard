@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
+import shlex
 from pathlib import Path
 import subprocess
 import time
@@ -36,35 +37,66 @@ def init():
 @click.option('--python-hooks', is_flag=True, help='Inject cooperative subprocess checks into Python interpreters.')
 @click.option('--node-hooks', is_flag=True, help='Inject cooperative child_process checks into Node.js.')
 @click.option('--rollback-on-failure', is_flag=True, help='Restore this session when the command exits nonzero.')
+@click.option('--verify', multiple=True, help='Validation command after success; repeat to run checks in order.')
 @click.argument('command', nargs=-1, type=click.UNPROCESSED, required=True)
-def run(command, python_hooks, node_hooks, rollback_on_failure):
+def run(command, python_hooks, node_hooks, rollback_on_failure, verify):
     """Check a launch command, snapshot the workspace, and execute it."""
     root = Path.cwd()
     settings = core.config(root)
     directory = core.store(root)
     # Exclusive lock prevents concurrent sessions and undo in this workspace.
     with workspace_lock(directory):
-        evaluation = core.evaluate(command, settings)
-        if evaluation['matched_rules']:
-            mode = evaluation['mode']
-            rules = ', '.join(map(str, evaluation['matched_rules']))
-            if mode == 'block':
-                raise click.ClickException(f'Launch command blocked by safety rules: {rules}.')
-            if mode == 'ask' and not click.confirm('Potentially destructive launch command. Continue?', default=False):
-                raise click.ClickException('Launch cancelled.')
-            click.echo('Warning: potentially destructive launch command.', err=True)
+        validators = []
+        for index, text in enumerate(verify, 1):
+            try:
+                parsed = shlex.split(text)
+            except ValueError as exc:
+                raise click.ClickException(f'Invalid quoting in verification command {index}.') from exc
+            if not parsed or not parsed[0]:
+                raise click.ClickException(f'Verification command {index} must not be empty.')
+            validators.append(parsed)
+        # Check all launch commands before allowing the agent to modify files.
+        for label, argv in [('Launch command', command)] + [
+            (f'Verification command {i}', argv) for i, argv in enumerate(validators, 1)
+        ]:
+            evaluation = core.evaluate(argv, settings)
+            if evaluation['matched_rules']:
+                mode = evaluation['mode']
+                rules = ', '.join(map(str, evaluation['matched_rules']))
+                if mode == 'block':
+                    raise click.ClickException(f'{label} blocked by safety rules: {rules}.')
+                if mode == 'ask' and not click.confirm(f'{label} matches safety rules. Continue?', default=False):
+                    raise click.ClickException('Launch cancelled.')
+                click.echo(f'Warning: {label} matches safety rules.', err=True)
         click.echo('Session snapshots enabled. ' + ('Opt-in runtime hooks enabled; secret reads are not intercepted.' if python_hooks or node_hooks else 'Child commands and secret reads are not intercepted.'), err=True)
         record = {
             'id': f'{time.time_ns():020d}-{uuid.uuid4().hex}',
             'started_at': datetime.now(timezone.utc).isoformat(),
             'hooks': [name for name, enabled in [('python', python_hooks), ('node', node_hooks)] if enabled],
             'automatic_rollback': 'pending' if rollback_on_failure else 'disabled',
+            'verification': {'requested': len(validators), 'exit_codes': [], 'state': 'pending' if validators else 'disabled'},
             'before': core.capture(root, settings),
         }
         core.save(root, record)
+        env = runtime.environment(settings, python_hooks, node_hooks) if python_hooks or node_hooks else None
         try:
-            result = subprocess.run(command, check=False, env=runtime.environment(settings, python_hooks, node_hooks) if python_hooks or node_hooks else None)
+            result = subprocess.run(command, check=False, env=env)
             code = result.returncode
+            record['command_exit_code'] = code
+            if validators:
+                record['verification']['state'] = 'skipped' if code != 0 else 'passed'
+            if code == 0:
+                for index, argv in enumerate(validators, 1):
+                    click.echo(f'Running verification {index}/{len(validators)}.', err=True)
+                    try:
+                        code = subprocess.run(argv, check=False, env=env).returncode
+                    except OSError:
+                        code = 127
+                        click.echo(f'Verification command {index} could not be started.', err=True)
+                    record['verification']['exit_codes'].append(code)
+                    if code != 0:
+                        record['verification']['state'] = 'failed'
+                        break
             record['exit_code'] = code
             if rollback_on_failure and code == 0:
                 record['automatic_rollback'] = 'not-needed'
@@ -165,7 +197,7 @@ def history_command(as_json, limit):
     for row in rows:
         code = row['exit_code'] if row['exit_code'] is not None else 'unknown'
         changed = row['changed_paths'] if row['changed_paths'] is not None else 'unknown'
-        click.echo(f"{row['id']}  {row['state']}  exit={code}  changed={changed}  recovery={row['automatic_rollback']}")
+        click.echo(f"{row['id']}  {row['state']}  exit={code}  changed={changed}  recovery={row['automatic_rollback']}  verification={row['verification']['state']}")
 
 
 @main.command('diff')

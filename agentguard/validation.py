@@ -48,6 +48,16 @@ def record(value):
         raise ValueError('Invalid snapshot undo state')
     if 'exit_code' in value and type(value['exit_code']) is not int:
         raise ValueError('Invalid snapshot exit code')
+    if 'command_exit_code' in value and type(value['command_exit_code']) is not int:
+        raise ValueError('Invalid command exit code')
+    if 'verification' in value:
+        check = value['verification']
+        if (not isinstance(check, dict) or type(check.get('requested')) is not int
+                or check['requested'] < 0 or not isinstance(check.get('exit_codes'), list)
+                or len(check['exit_codes']) > check['requested']
+                or any(type(code) is not int for code in check['exit_codes'])
+                or check.get('state') not in ('disabled', 'pending', 'skipped', 'passed', 'failed')):
+            raise ValueError('Invalid verification metadata')
     if 'hooks' in value and (not isinstance(value['hooks'], list) or any(h not in ('python', 'node') for h in value['hooks'])):
         raise ValueError('Invalid snapshot hooks')
     if value.get('automatic_rollback', 'disabled') not in ('disabled', 'pending', 'not-needed', 'restored', 'failed', 'not-started'):
