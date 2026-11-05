@@ -15,6 +15,7 @@ def summary(record):
         'finished_at': record.get('finished_at'),
         'exit_code': record.get('exit_code'),
         'hooks': record.get('hooks', []),
+        'automatic_rollback': record.get('automatic_rollback', 'disabled'),
         'changed_paths': len(core.changes(record['before'], record['after'])) if complete else None,
     }
 

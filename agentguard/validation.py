@@ -50,6 +50,8 @@ def record(value):
         raise ValueError('Invalid snapshot exit code')
     if 'hooks' in value and (not isinstance(value['hooks'], list) or any(h not in ('python', 'node') for h in value['hooks'])):
         raise ValueError('Invalid snapshot hooks')
+    if value.get('automatic_rollback', 'disabled') not in ('disabled', 'pending', 'not-needed', 'restored', 'failed', 'not-started'):
+        raise ValueError('Invalid automatic rollback state')
     for field in ('started_at', 'finished_at'):
         if field in value and not isinstance(value[field], str):
             raise ValueError('Invalid snapshot timestamp')

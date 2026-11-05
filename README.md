@@ -38,6 +38,20 @@
 
 初始化默认使用 `dangerous_commands = "block"`，支持 `block`、`ask`、`warn`，`blocked_patterns` 为 Python 正则列表。`snapshots.max_history` 默认为 30，按会话数量保留历史。下文的 privacy 配置和 auto_snapshot 选项属于规划，当前不生效；当前始终创建会话快照。
 
+### 失败自动恢复（可选）
+
+```bash
+agentguard run --rollback-on-failure -- python agent_worker.py
+# 包装“修改 + 验证”流程；任一阶段失败就撤销该会话
+agentguard run --rollback-on-failure -- sh -c 'python edit.py && python -m unittest discover -s tests'
+```
+
+默认失败后保留改动，方便排查。显式启用后，命令非零退出（包括被信号终止）会在保存结束快照后恢复本次会话；成功退出则保留改动。恢复成功仍返回命令原始退出码，信号退出转换为 shell 状态（例如 SIGTERM 为 143），因此 CI 不会把失败误判为成功。恢复后的历史标记为 undone，`diff` 仍展示失败执行前后的差异。
+
+恢复复用快照完整性与冲突检查。若冲突或 I/O 错误导致恢复失败，CLI 返回 1，并在错误信息及历史中保留原命令退出码。此时先检查工作区，再决定是否执行 `undo`；恢复不是原子事务。自动恢复只作用于已捕获的工作区文件，不恢复 Git 元数据、网络请求或外部文件。
+
+不要在会话期间手动编辑工作区，否则这些编辑也可能被撤销。后台子进程必须随主命令结束。无法启动程序、没有完整结束快照、AgentGuard 自身被强制终止或 Ctrl-C 中断包装器时，不承诺自动恢复。`history --json` 的 `automatic_rollback` 字段记录 disabled、pending、not-started、not-needed、restored 或 failed；pending 表示没有确认恢复完成，需要人工检查。
+
 ### Python 子进程命令检查（可选）
 
 ```bash
@@ -277,6 +291,7 @@ max_history = 30
 - [x] CLI 骨架与核心规则拦截引擎
 - [x] 会话级完整快照与带冲突检查的 `agentguard undo` 回滚
 - [x] 回滚预览、快照结构校验和只读目录恢复
+- [x] 可选失败自动恢复，保留退出码与失败差异审计
 - [x] 会话历史、JSON 元数据与按路径查看文本差异
 - [ ] 逐条命令持久审计日志
 - [x] 内容寻址去重存储、旧快照兼容与垃圾回收预览

@@ -35,8 +35,9 @@ def init():
 @main.command(context_settings={'ignore_unknown_options': True})
 @click.option('--python-hooks', is_flag=True, help='Inject cooperative subprocess checks into Python interpreters.')
 @click.option('--node-hooks', is_flag=True, help='Inject cooperative child_process checks into Node.js.')
+@click.option('--rollback-on-failure', is_flag=True, help='Restore this session when the command exits nonzero.')
 @click.argument('command', nargs=-1, type=click.UNPROCESSED, required=True)
-def run(command, python_hooks, node_hooks):
+def run(command, python_hooks, node_hooks, rollback_on_failure):
     """Check a launch command, snapshot the workspace, and execute it."""
     root = Path.cwd()
     settings = core.config(root)
@@ -55,6 +56,7 @@ def run(command, python_hooks, node_hooks):
             'id': f'{time.time_ns():020d}-{uuid.uuid4().hex}',
             'started_at': datetime.now(timezone.utc).isoformat(),
             'hooks': [name for name, enabled in [('python', python_hooks), ('node', node_hooks)] if enabled],
+            'automatic_rollback': 'pending' if rollback_on_failure else 'disabled',
             'before': core.capture(root),
         }
         core.save(root, record)
@@ -62,10 +64,29 @@ def run(command, python_hooks, node_hooks):
             result = subprocess.run(command, check=False, env=runtime.environment(settings, python_hooks, node_hooks) if python_hooks or node_hooks else None)
             code = result.returncode
             record['exit_code'] = code
+            if rollback_on_failure and code == 0:
+                record['automatic_rollback'] = 'not-needed'
+        except OSError:
+            if rollback_on_failure:
+                record['automatic_rollback'] = 'not-started'
+            raise
         finally:
             record['finished_at'] = datetime.now(timezone.utc).isoformat()
             record['after'] = core.capture(root)
             core.save(root, record)
+        if rollback_on_failure and code != 0:
+            try:
+                core.restore(root, record)
+            except (OSError, ValueError) as exc:
+                record['automatic_rollback'] = 'failed'
+                core.save(root, record)
+                raise click.ClickException(
+                    f'Command exited {code}; automatic rollback failed: {exc}. '
+                    'Inspect history and workspace before retrying undo.'
+                ) from exc
+            record['automatic_rollback'] = 'restored'
+            core.save(root, record)
+            click.echo(f'Command exited {code}; session changes restored.', err=True)
         maximum = settings.get('snapshots', {}).get('max_history', 30)
         for old in core.records(root)[:-maximum]:
             (directory / 'snapshots' / (old['id'] + '.json')).unlink()
@@ -142,7 +163,7 @@ def history_command(as_json, limit):
     for row in rows:
         code = row['exit_code'] if row['exit_code'] is not None else 'unknown'
         changed = row['changed_paths'] if row['changed_paths'] is not None else 'unknown'
-        click.echo(f"{row['id']}  {row['state']}  exit={code}  changed={changed}")
+        click.echo(f"{row['id']}  {row['state']}  exit={code}  changed={changed}  recovery={row['automatic_rollback']}")
 
 
 @main.command('diff')
