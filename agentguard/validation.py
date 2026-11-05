@@ -3,6 +3,7 @@ import base64
 import binascii
 from pathlib import PurePosixPath
 import re
+import math
 
 
 def manifest(value):
@@ -58,6 +59,13 @@ def record(value):
                 or any(type(code) is not int for code in check['exit_codes'])
                 or check.get('state') not in ('disabled', 'pending', 'skipped', 'passed', 'failed')):
             raise ValueError('Invalid verification metadata')
+        timeout = check.get('timeout_seconds')
+        if timeout is not None and (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0):
+            raise ValueError('Invalid verification timeout')
+        timed_out = check.get('timed_out', [])
+        if (not isinstance(timed_out, list) or any(type(i) is not int or i < 1
+                or i > len(check['exit_codes']) or check['exit_codes'][i - 1] != 124 for i in timed_out)):
+            raise ValueError('Invalid verification timeout results')
     if 'hooks' in value and (not isinstance(value['hooks'], list) or any(h not in ('python', 'node') for h in value['hooks'])):
         raise ValueError('Invalid snapshot hooks')
     if value.get('automatic_rollback', 'disabled') not in ('disabled', 'pending', 'not-needed', 'restored', 'failed', 'not-started'):

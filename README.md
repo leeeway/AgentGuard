@@ -55,6 +55,21 @@ agentguard run --rollback-on-failure \
 
 `history --json` 增加 `command_exit_code`（主命令退出码）和 `verification`（请求次数、已执行退出码、状态）。状态为 disabled、pending、skipped、passed 或 failed。不保存验证命令参数，验证程序自身的终端输出不做遮蔽。
 
+### 验证超时控制
+
+```bash
+agentguard run --rollback-on-failure \
+  --verify-timeout 120 \
+  --verify 'python -m unittest discover -s tests' \
+  -- python agent_worker.py
+```
+
+`--verify-timeout` 接受有限的正数秒数，可带小数，必须与 `--verify` 一起使用。它分别限制每项验证的执行时间，不限制主 Agent 命令、快照或回滚时间；默认不设置超时。
+
+启用后，验证在独立会话中运行，stdin 为 EOF，stdout/stderr 沿用终端，适合非交互测试和构建。超时向验证进程组发送 SIGTERM，等待主验证进程退出（最多 1 秒），再发送 SIGKILL 清理仍在同组的后代进程，等待主验证进程回收后才记录结束快照。后续验证停止，最终退出码为 124；配合 `--rollback-on-failure` 可自动恢复改动。
+
+历史 verification 元数据增加 `timeout_seconds` 与 `timed_out`（从 1 开始的超时验证编号）。这可区分真实超时与程序自行返回 124。自行创建新会话或进程组的后代可逃离清理范围；验证命令应等待自身子进程退出，不应启动脱离进程组的后台任务。此机制适用于 macOS/Linux。
+
 ### 执行前检查与规则解释
 
 ```bash
@@ -355,6 +370,7 @@ max_history = 30
 - [x] 回滚预览、快照结构校验和只读目录恢复
 - [x] 可选失败自动恢复，保留退出码与失败差异审计
 - [x] 顺序验证命令、失败停止及验证失败自动恢复
+- [x] 验证超时、进程组清理和超时审计
 - [x] 会话历史、JSON 元数据与按路径查看文本差异
 - [ ] 逐条命令持久审计日志
 - [x] 内容寻址去重存储、旧快照兼容与垃圾回收预览

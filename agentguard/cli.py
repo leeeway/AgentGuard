@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
+import math
 import shlex
 from pathlib import Path
 import subprocess
@@ -9,7 +10,7 @@ import uuid
 
 import click
 
-from . import core, runtime, inspection, objects, inventory, diagnostics
+from . import core, runtime, inspection, objects, inventory, diagnostics, processes
 
 
 class GuardGroup(click.Group):
@@ -38,9 +39,12 @@ def init():
 @click.option('--node-hooks', is_flag=True, help='Inject cooperative child_process checks into Node.js.')
 @click.option('--rollback-on-failure', is_flag=True, help='Restore this session when the command exits nonzero.')
 @click.option('--verify', multiple=True, help='Validation command after success; repeat to run checks in order.')
+@click.option('--verify-timeout', type=click.FloatRange(min=0, min_open=True), help='Maximum seconds per verification command (noninteractive).')
 @click.argument('command', nargs=-1, type=click.UNPROCESSED, required=True)
-def run(command, python_hooks, node_hooks, rollback_on_failure, verify):
+def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_timeout):
     """Check a launch command, snapshot the workspace, and execute it."""
+    if verify_timeout is not None and (not math.isfinite(verify_timeout) or not verify):
+        raise click.UsageError('--verify-timeout requires --verify and a finite positive duration.')
     root = Path.cwd()
     settings = core.config(root)
     directory = core.store(root)
@@ -77,6 +81,9 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify):
             'verification': {'requested': len(validators), 'exit_codes': [], 'state': 'pending' if validators else 'disabled'},
             'before': core.capture(root, settings),
         }
+        if verify_timeout is not None:
+            record['verification']['timeout_seconds'] = verify_timeout
+            record['verification']['timed_out'] = []
         core.save(root, record)
         env = runtime.environment(settings, python_hooks, node_hooks) if python_hooks or node_hooks else None
         try:
@@ -89,7 +96,10 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify):
                 for index, argv in enumerate(validators, 1):
                     click.echo(f'Running verification {index}/{len(validators)}.', err=True)
                     try:
-                        code = subprocess.run(argv, check=False, env=env).returncode
+                        code, timed_out = processes.verify(argv, env, verify_timeout)
+                        if timed_out:
+                            record['verification']['timed_out'].append(index)
+                            click.echo(f'Verification command {index} timed out; process group stopped.', err=True)
                     except OSError:
                         code = 127
                         click.echo(f'Verification command {index} could not be started.', err=True)
