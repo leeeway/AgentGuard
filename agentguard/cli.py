@@ -10,7 +10,7 @@ import uuid
 
 import click
 
-from . import core, runtime, inspection, objects, inventory, diagnostics, processes
+from . import core, runtime, inspection, objects, inventory, diagnostics, processes, audit
 
 
 class GuardGroup(click.Group):
@@ -86,7 +86,10 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
             record['verification']['timeout_seconds'] = verify_timeout
             record['verification']['timed_out'] = []
         core.save(root, record)
-        env = runtime.environment(settings, python_hooks, node_hooks) if python_hooks or node_hooks else None
+        audit_path = audit.initialize(root, record['id'])
+        decision = core.evaluate(command, settings)
+        audit.append(audit_path, 'cli', 'launch', 'confirmed' if decision['decision'] == 'confirmation-required' else decision['decision'], decision['matched_rules'])
+        env = runtime.environment(settings, python_hooks, node_hooks, audit_path=audit_path)
         try:
             result = subprocess.run(command, check=False, env=env)
             code = result.returncode
@@ -96,6 +99,8 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
             if code == 0:
                 for index, argv in enumerate(validators, 1):
                     click.echo(f'Running verification {index}/{len(validators)}.', err=True)
+                    decision = core.evaluate(argv, settings)
+                    audit.append(audit_path, 'cli', f'verification.{index}', 'confirmed' if decision['decision'] == 'confirmation-required' else decision['decision'], decision['matched_rules'])
                     try:
                         code, timed_out = processes.verify(argv, env, verify_timeout)
                         if timed_out:
@@ -291,6 +296,26 @@ def doctor(as_json):
             if 'action' in row:
                 click.echo('  ' + row['action'])
     raise click.exceptions.Exit(1 if report['errors'] else 3 if report['warnings'] else 0)
+
+
+@main.command('audit')
+@click.option('--session', help='Full session ID; defaults to the latest retained session.')
+@click.option('--json', 'as_json', is_flag=True, help='Emit recorded decisions as JSON.')
+@click.option('--limit', type=click.IntRange(min=1), default=100, show_default=True)
+def audit_command(session, as_json, limit):
+    """Read the last recorded decisions for a session in chronological order."""
+    root = Path.cwd()
+    core.config(root)
+    if session is None:
+        session = inspection.select(core.records(root))['id']
+    rows = audit.read(root, session, limit)
+    if as_json:
+        click.echo(json.dumps(rows, ensure_ascii=True))
+    elif not rows:
+        click.echo('No recorded audit events.')
+    else:
+        for row in rows:
+            click.echo(json.dumps(row, ensure_ascii=True))
 
 
 if __name__ == '__main__':
