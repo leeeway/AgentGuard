@@ -66,6 +66,7 @@ def config(root):
         limit = data.get('snapshots', {}).get(key)
         if limit is not None and (type(limit) is not int or limit < 1):
             raise ValueError(f'snapshots.{key} must be a positive integer')
+    validation.exclusions(data.get('snapshots', {}).get('exclude', []))
     return data
 
 
@@ -89,7 +90,7 @@ def capture(root, settings=None):
     limits = (settings or {}).get('snapshots', {})
     result = {}
     total = 0
-    for path, info in inventory.entries(root):
+    for path, info in inventory.entries(root, limits.get('exclude', [])):
         key = path.relative_to(root).as_posix()
         mode = stat.S_IMODE(info.st_mode)
         if stat.S_ISLNK(info.st_mode):
@@ -171,7 +172,7 @@ def restore(root, record, dry_run=False):
     if 'after' not in record:
         raise ValueError('Session is incomplete; automatic undo cannot safely check for later edits.')
     before, after = record['before'], record['after']
-    current = capture(root)
+    current = capture(root, {'snapshots': {'exclude': record.get('snapshot_excludes', [])}})
     touched = changes(before, after)
     conflicts = [k for k in touched if current.get(k) != after.get(k)]
     for key in touched:
@@ -185,6 +186,12 @@ def restore(root, record, dry_run=False):
     for key in touched:
         if after.get(key, {}).get('kind') == 'dir' and before.get(key, {}).get('kind') != 'dir':
             conflicts.extend(k for k in current if k.startswith(key + '/') and k not in touched)
+            # Include excluded and protected direct children without reading them.
+            if current.get(key, {}).get('kind') == 'dir':
+                for child in (root / key).iterdir():
+                    name = child.relative_to(root).as_posix()
+                    if name not in touched:
+                        conflicts.append(name)
     if conflicts:
         raise ValueError('Undo refused: files changed after the session: ' + ', '.join(sorted(set(conflicts))))
     if dry_run:

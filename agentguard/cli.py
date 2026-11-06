@@ -79,6 +79,7 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
             'hooks': [name for name, enabled in [('python', python_hooks), ('node', node_hooks)] if enabled],
             'automatic_rollback': 'pending' if rollback_on_failure else 'disabled',
             'verification': {'requested': len(validators), 'exit_codes': [], 'state': 'pending' if validators else 'disabled'},
+            'snapshot_excludes': list(settings.get('snapshots', {}).get('exclude', [])),
             'before': core.capture(root, settings),
         }
         if verify_timeout is not None:

@@ -1,11 +1,13 @@
 """Metadata-only inventory shared by preflight and snapshot capture."""
 import stat
+from fnmatch import fnmatchcase
 
 
-def entries(root):
+def entries(root, excludes=()):
     def visit(directory):
         for path in sorted(directory.iterdir()):
-            if path.name in ('.git', '.agentguard'):
+            name = path.relative_to(root).as_posix()
+            if path.name in ('.git', '.agentguard') or any(fnmatchcase(name, pattern) for pattern in excludes):
                 continue
             info = path.lstat()
             yield path, info
@@ -19,7 +21,7 @@ def plan(root, settings):
     total = files = directories = links = 0
     largest = None
     issues = []
-    for path, info in entries(root):
+    for path, info in entries(root, limits.get('exclude', [])):
         name = path.relative_to(root).as_posix()
         if stat.S_ISREG(info.st_mode):
             files += 1
@@ -39,4 +41,4 @@ def plan(root, settings):
     return {'files': files, 'directories': directories, 'symlinks': links,
             'total_bytes': total, 'largest_file': largest,
             'limits': {key: limits.get(key) for key in ('max_file_bytes', 'max_total_bytes')},
-            'issues': issues, 'ready': not issues}
+            'issues': issues, 'ready': not issues, 'exclude': limits.get('exclude', [])}

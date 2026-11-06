@@ -37,9 +37,20 @@ def manifest(value):
                     raise ValueError('Snapshot parent must be a recorded directory')
 
 
+def exclusions(value):
+    if not isinstance(value, list) or any(
+        not isinstance(pattern, str) or not pattern or '\x00' in pattern
+        or pattern.startswith(('/', '~')) or '\\' in pattern
+        or any(part in ('', '.', '..') for part in pattern.split('/'))
+        for pattern in value
+    ):
+        raise ValueError('Snapshot exclusions must be workspace-relative glob strings without empty, dot or parent components')
+
+
 def record(value):
     if not isinstance(value, dict):
         raise ValueError('Snapshot record must be an object')
+    exclusions(value.get('snapshot_excludes', []))
     manifest(value.get('before'))
     if 'after' in value:
         manifest(value['after'])
