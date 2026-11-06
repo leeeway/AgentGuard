@@ -58,6 +58,13 @@ def record(value):
         raise ValueError('Invalid snapshot identifier')
     if 'undone' in value and type(value['undone']) is not bool:
         raise ValueError('Invalid snapshot undo state')
+    if 'restored_paths' in value:
+        restored = value['restored_paths']
+        if (not isinstance(restored, list) or any(not isinstance(p, str) for p in restored)
+                or len(restored) != len(set(restored)) or 'after' not in value
+                or any(p not in value['before'] and p not in value['after']
+                       or value['before'].get(p) == value['after'].get(p) for p in restored)):
+            raise ValueError('Invalid restored paths in snapshot')
     if 'exit_code' in value and type(value['exit_code']) is not int:
         raise ValueError('Invalid snapshot exit code')
     if 'command_exit_code' in value and type(value['command_exit_code']) is not int:

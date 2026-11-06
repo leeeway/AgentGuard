@@ -155,8 +155,11 @@ def workspace_lock(directory):
 @main.command()
 @click.option('--all', 'undo_all', is_flag=True, help='Restore the latest session (currently one snapshot per session).')
 @click.option('--dry-run', is_flag=True, help='Check conflicts and preview paths without changing files.')
-def undo(undo_all, dry_run):
+@click.option('--path', 'paths', multiple=True, help='Restore only this exact relative file/link path; repeatable.')
+def undo(undo_all, dry_run, paths):
     """Undo the latest session, refusing to overwrite subsequent edits."""
+    if undo_all and paths:
+        raise click.UsageError('--all and --path cannot be combined.')
     root = Path.cwd()
     core.config(root)
     with workspace_lock(core.store(root)):
@@ -164,13 +167,13 @@ def undo(undo_all, dry_run):
         if not pending:
             click.echo('No sessions to undo.')
             return
-        touched = core.restore(root, pending[-1], dry_run=dry_run)
+        touched = core.restore(root, pending[-1], dry_run=dry_run, paths=paths)
         if dry_run:
             for path in touched:
                 click.echo('would restore: ' + json.dumps(path, ensure_ascii=False))
             click.echo(f'Undo preview: {len(touched)} paths; no files changed.')
             return
-    click.echo('Restored the latest session.')
+    click.echo('Restored selected paths.' if paths else 'Restored the latest session.')
 
 
 @main.command()
@@ -188,6 +191,8 @@ def status():
             click.echo('Latest session is running or incomplete.')
             return
         for key in core.changes(record['before'], record['after']):
+            if key in record.get('restored_paths', []):
+                continue
             label = 'added' if key not in record['before'] else 'deleted' if key not in record['after'] else 'modified'
             click.echo(f'{label}: {json.dumps(key, ensure_ascii=False)}')
 

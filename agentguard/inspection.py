@@ -8,9 +8,16 @@ from . import core
 
 def summary(record):
     complete = 'after' in record
+    restored = record.get('restored_paths', [])
+    remaining = [p for p in core.changes(record['before'], record['after']) if p not in restored] if complete else None
+    state = 'incomplete' if not complete else 'partially-undone' if restored else 'complete'
+    if record.get('undone'):
+        state = 'undone'
     return {
         'id': record['id'],
-        'state': 'undone' if record.get('undone') else 'complete' if complete else 'incomplete',
+        'state': state,
+        'restored_paths': record.get('restored_paths', []),
+        'remaining_paths': (0 if record.get('undone') else len(remaining)) if complete else None,
         'started_at': record.get('started_at'),
         'finished_at': record.get('finished_at'),
         'exit_code': record.get('exit_code'),

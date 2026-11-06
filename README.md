@@ -38,6 +38,18 @@
 
 初始化默认使用 `dangerous_commands = "block"`，支持 `block`、`ask`、`warn`，`blocked_patterns` 为 Python 正则列表。`snapshots.max_history` 默认为 30，按会话数量保留历史。下文的 privacy 配置和 auto_snapshot 选项属于规划，当前不生效；当前始终创建会话快照。
 
+### 按文件撤销
+
+```bash
+agentguard undo --path src/main.py --dry-run
+agentguard undo --path src/main.py --path tests/test_main.py
+agentguard undo   # 继续撤销该会话剩余改动
+```
+
+`--path` 精确匹配工作区相对路径，可重复使用，不展开 glob；作用于最近一个尚未完全撤销的会话，不能与 `--all` 同时使用。所有选定路径在写入前一起检查，任一冲突或无效选择都会拒绝本次撤销。未选中文件上的后续编辑不会阻止本次恢复。
+
+当前支持常规文件和符号链接的新增、修改、删除；目录本身、涉及目录的类型转换，以及需要重建缺失父目录的恢复必须使用完整 `undo`。部分恢复会记入 restored_paths，历史状态为 partially-undone，并显示 remaining_paths；`status` 隐藏已恢复路径，`diff` 仍保留完整原始差异。后续完整撤销跳过已恢复路径，因此其后的人工编辑会保留；若这些文件妨碍恢复目录结构，则仍拒绝撤销。所有剩余变更恢复后才将会话标记为 undone。
+
 ### 修改后自动验证
 
 ```bash
@@ -129,7 +141,7 @@ agentguard diff --session <完整会话ID>
 agentguard diff --contents --path src/main.py
 ```
 
-历史记录包括会话 ID、状态（complete / incomplete / undone）、UTC 开始与结束时间、退出码、启用的 Hook 和变更路径数量。旧快照缺少的元数据显示为空；没有成功取得进程退出状态时，退出码显示 unknown。只记录会话元数据，不保存启动命令参数。历史随 `max_history` 一同裁剪。
+历史记录包括会话 ID、状态（complete / incomplete / partially-undone / undone）、UTC 开始与结束时间、退出码、启用的 Hook 和变更路径数量。旧快照缺少的元数据显示为空；没有成功取得进程退出状态时，退出码显示 unknown。只记录会话元数据，不保存启动命令参数。历史随 `max_history` 一同裁剪。
 
 `diff` 比较保存的执行前后快照，不读取当前工作区内容。默认只显示新增、删除、修改路径；`--contents` 显式显示 UTF-8 文本 unified diff、权限和符号链接目标，可能包含凭据，请按需使用。二进制内容省略，终端控制字符转义。`--path` 可重复，按工作区相对路径精确匹配。不完整会话没有最终差异；`--session` 使用完整会话 ID，不支持前缀匹配。目前未实现逐条命令持久审计日志。
 
@@ -382,6 +394,7 @@ max_history = 30
 - [x] 执行前规则解释、JSON 决策输出与配置类型校验
 - [x] 会话级完整快照与带冲突检查的 `agentguard undo` 回滚
 - [x] 回滚预览、快照结构校验和只读目录恢复
+- [x] 按文件/符号链接撤销、部分恢复状态与剩余变更跟踪
 - [x] 可选失败自动恢复，保留退出码与失败差异审计
 - [x] 顺序验证命令、失败停止及验证失败自动恢复
 - [x] 验证超时、进程组清理和超时审计

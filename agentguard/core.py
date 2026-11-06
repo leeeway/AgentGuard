@@ -167,13 +167,25 @@ def changes(before, after):
     return sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
 
 
-def restore(root, record, dry_run=False):
+def restore(root, record, dry_run=False, paths=()):
     validation.record(record)
     if 'after' not in record:
         raise ValueError('Session is incomplete; automatic undo cannot safely check for later edits.')
     before, after = record['before'], record['after']
     current = capture(root, {'snapshots': {'exclude': record.get('snapshot_excludes', [])}})
-    touched = changes(before, after)
+    original_changes = changes(before, after)
+    restored = set(record.get('restored_paths', []))
+    remaining = [key for key in original_changes if key not in restored]
+    touched = sorted(set(paths)) if paths else remaining
+    for key in touched:
+        if key not in remaining:
+            raise ValueError('Path is unchanged or already restored: ' + json.dumps(key))
+        if paths:
+            if any(entry.get(key, {}).get('kind') == 'dir' for entry in (before, after)):
+                raise ValueError('Selective undo supports files and links; use full undo for directory changes.')
+            for parent in Path(key).parents:
+                if str(parent) != '.' and current.get(parent.as_posix(), {}).get('kind') != 'dir':
+                    raise ValueError('Selective undo requires existing parent directories; use full undo.')
     conflicts = [k for k in touched if current.get(k) != after.get(k)]
     for key in touched:
         for parent in Path(key).parents:
@@ -225,5 +237,6 @@ def restore(root, record, dry_run=False):
     for key in sorted(touched, key=lambda k: k.count('/'), reverse=True):
         if before.get(key, {}).get('kind') == 'dir':
             (root / key).chmod(before[key]['mode'])
-    record['undone'] = True
+    record['restored_paths'] = sorted(restored | set(touched))
+    record['undone'] = len(record['restored_paths']) == len(original_changes)
     save(root, record)
