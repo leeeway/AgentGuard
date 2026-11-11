@@ -2,6 +2,19 @@
 // Cooperative guards: application code can replace these wrappers.
 const cp = require('node:child_process');
 const fs = require('node:fs');
+// Retain originals so writing the audit log cannot re-enter file protection.
+const auditOpen = fs.openSync.bind(fs);
+const auditWrite = fs.writeSync.bind(fs);
+const auditClose = fs.closeSync.bind(fs);
+function record(event, decision, rules) {
+  if (!process.env.AGENTGUARD_AUDIT) return;
+  const fd = auditOpen(process.env.AGENTGUARD_AUDIT, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW);
+  try {
+    const data = Buffer.from(JSON.stringify({timestamp: new Date().toISOString(), pid: process.pid,
+      source: 'node', event, decision, rules}) + '\n');
+    if (auditWrite(fd, data) !== data.length) throw new Error('AgentGuard: incomplete audit write');
+  } finally { auditClose(fd); }
+}
 const { syncBuiltinESMExports } = require('node:module');
 const policy = JSON.parse(process.env.AGENTGUARD_POLICY || '{}');
 const mode = policy.dangerous_commands || 'block';
@@ -15,15 +28,7 @@ for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execF
   const guarded = function (...args) {
     const command = [args[0], ...(Array.isArray(args[1]) ? args[1] : [])].join(' ');
     const rule = patterns.findIndex(pattern => pattern.test(command));
-    if (process.env.AGENTGUARD_AUDIT) {
-      const fd = fs.openSync(process.env.AGENTGUARD_AUDIT, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW);
-      try {
-        const data = Buffer.from(JSON.stringify({timestamp: new Date().toISOString(), pid: process.pid,
-          source: 'node', event: `child_process.${name}`, decision: rule === -1 ? 'allowed' : mode === 'warn' ? 'warning' : 'blocked',
-          rules: rule === -1 ? [] : [rule + 1]}) + '\n');
-        if (fs.writeSync(fd, data) !== data.length) throw new Error('AgentGuard: incomplete audit write');
-      } finally { fs.closeSync(fd); }
-    }
+    record(`child_process.${name}`, rule === -1 ? 'allowed' : mode === 'warn' ? 'warning' : 'blocked', rule === -1 ? [] : [rule + 1]);
     if (rule !== -1) {
       const message = `AgentGuard: ${mode === 'warn' ? 'warning' : 'blocked'} child_process.${name} by rule ${rule + 1}`;
       process.stderr.write(message + '\n');
@@ -56,5 +61,8 @@ for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execF
     };
   }
   cp[name] = guarded;
+}
+if (process.env.AGENTGUARD_NODE_PRIVACY) {
+  require('./file-policy.cjs').install(JSON.parse(process.env.AGENTGUARD_NODE_PRIVACY), record);
 }
 syncBuiltinESMExports();

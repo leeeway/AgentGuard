@@ -36,7 +36,7 @@ def init():
 
 @main.command(context_settings={'ignore_unknown_options': True})
 @click.option('--python-hooks', is_flag=True, help='Inject cooperative subprocess checks into Python interpreters.')
-@click.option('--protect-files', is_flag=True, help='Block protected file opens in hooked Python interpreters; requires --python-hooks.')
+@click.option('--protect-files', is_flag=True, help='Block protected paths in enabled Python/Node.js hooks.')
 @click.option('--node-hooks', is_flag=True, help='Inject cooperative child_process checks into Node.js.')
 @click.option('--rollback-on-failure', is_flag=True, help='Restore this session when the command exits nonzero.')
 @click.option('--verify', multiple=True, help='Validation command after success; repeat to run checks in order.')
@@ -44,8 +44,8 @@ def init():
 @click.argument('command', nargs=-1, type=click.UNPROCESSED, required=True)
 def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_timeout, protect_files):
     """Check a launch command, snapshot the workspace, and execute it."""
-    if protect_files and not python_hooks:
-        raise click.UsageError('--protect-files requires --python-hooks; other runtimes are not covered.')
+    if protect_files and not (python_hooks or node_hooks):
+        raise click.UsageError('--protect-files requires --python-hooks or --node-hooks.')
     if verify_timeout is not None and (not math.isfinite(verify_timeout) or not verify):
         raise click.UsageError('--verify-timeout requires --verify and a finite positive duration.')
     root = Path.cwd()
@@ -77,7 +77,7 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
                 if mode == 'ask' and not click.confirm(f'{label} matches safety rules. Continue?', default=False):
                     raise click.ClickException('Launch cancelled.')
                 click.echo(f'Warning: {label} matches safety rules.', err=True)
-        click.echo('Session snapshots enabled. ' + ('Python protected-file opens are blocked.' if protect_files else 'Protected-file blocking is disabled.'), err=True)
+        click.echo('Session snapshots enabled. ' + ('Protected-file access checks enabled for selected runtime hooks.' if protect_files else 'Protected-file blocking is disabled.'), err=True)
         record = {
             'id': f'{time.time_ns():020d}-{uuid.uuid4().hex}',
             'started_at': datetime.now(timezone.utc).isoformat(),
@@ -194,7 +194,7 @@ def status():
     core.config(root)
     history = core.records(root)
     click.echo(f'Sessions: {len(history)}')
-    click.echo('Protection: launch-command checks; optional Python/Node command hooks; Python file-open blocking via --protect-files.')
+    click.echo('Protection: launch-command checks; optional Python/Node command hooks; file access checks via --protect-files.')
     pending = [r for r in history if not r.get('undone')]
     if pending:
         record = pending[-1]

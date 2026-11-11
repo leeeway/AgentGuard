@@ -6,7 +6,7 @@ import re
 import sys
 import threading
 
-from .privacy import DEFAULT_PROTECTED, FilePolicy
+from .privacy import DEFAULT_PROTECTED, FilePolicy, node_rules
 
 
 def environment(settings, python_hooks=True, node_hooks=False, audit_path=None, protected_root=None):
@@ -24,7 +24,13 @@ def environment(settings, python_hooks=True, node_hooks=False, audit_path=None, 
         env['AGENTGUARD_AUDIT'] = str(audit_path)
     else:
         env.pop('AGENTGUARD_AUDIT', None)
+    env.pop('AGENTGUARD_NODE_PRIVACY', None)
     if protected_root is not None:
+        if node_hooks:
+            env['AGENTGUARD_NODE_PRIVACY'] = json.dumps({
+                'root': str(protected_root),
+                'rules': node_rules(settings.get('privacy', {}).get('protected_files', DEFAULT_PROTECTED)),
+            })
         env['AGENTGUARD_PRIVACY'] = json.dumps({
             'root': str(protected_root),
             'patterns': settings.get('privacy', {}).get('protected_files', DEFAULT_PROTECTED),

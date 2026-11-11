@@ -28,7 +28,7 @@
 - `agentguard undo --dry-run`：预检快照和冲突，列出待恢复路径，不修改文件或会话状态。
 - `agentguard undo` / `undo --all`：当前均撤销最近一次完整会话；再次执行可撤销更早的会话。若会话结束后相关文件又被修改，会拒绝整个撤销。
 
-**保护边界：**当前不是安全沙箱，默认不拦截子进程；可选 Python/Node.js Hook 检查支持的进程启动事件；Python 可另行启用受保护文件打开拦截，不拦截网络访问，也没有凭据遮蔽功能。启动命令正则检查可以被绕过，不能用于运行不可信代码。会话期间请勿同时手动编辑工作区：快照无法区分同时发生的人为编辑和 Agent 编辑。后台进程必须在会话结束前退出。
+**保护边界：**当前不是安全沙箱，默认不拦截子进程；可选 Python/Node.js Hook 检查支持的进程启动事件；Python/Node.js 可另行启用受保护文件访问检查，不拦截网络访问，也没有凭据遮蔽功能。启动命令正则检查可以被绕过，不能用于运行不可信代码。会话期间请勿同时手动编辑工作区：快照无法区分同时发生的人为编辑和 Agent 编辑。后台进程必须在会话结束前退出。
 
 新快照将文件清单存放于 `.agentguard/snapshots`，文件内容按 SHA-256 哈希去重存放于 `.agentguard/objects`；相同内容跨文件、跨会话共享一个对象。记录文件权限和符号链接，不跟随符号链接。旧版内嵌内容的快照仍可读取和撤销。跳过所有 `.git` 和 `.agentguard` 目录项；因此不恢复 Git 元数据，也不恢复指向工作区外的文件内容。包含未跟踪、被 Git 忽略的文件及密钥文件，快照未加密，请将 `.agentguard/` 保持在 Git 忽略列表中。当前实现内容去重，但每次仍扫描和读取整个工作区，变更文件保存完整内容，不是块级增量；没有微秒级性能保证，大型工作区仍需评估扫描与内存开销。
 
@@ -36,7 +36,7 @@
 
 ### 当前支持的配置
 
-初始化默认使用 `dangerous_commands = "block"`，支持 `block`、`ask`、`warn`，`blocked_patterns` 为 Python 正则列表。`snapshots.max_history` 默认为 30，按会话数量保留历史。`privacy.protected_files` 用于显式启用的 Python 文件保护。下文的 mask_mode 和 auto_snapshot 选项属于规划，当前不生效；当前始终创建会话快照。
+初始化默认使用 `dangerous_commands = "block"`，支持 `block`、`ask`、`warn`，`blocked_patterns` 为 Python 正则列表。`snapshots.max_history` 默认为 30，按会话数量保留历史。`privacy.protected_files` 用于显式启用的 Python/Node.js 文件保护。下文的 mask_mode 和 auto_snapshot 选项属于规划，当前不生效；当前始终创建会话快照。
 
 ### 按文件撤销
 
@@ -125,7 +125,7 @@ agentguard run --python-hooks -- python agent_worker.py
 agentguard run --python-hooks --protect-files -- python agent_worker.py
 ```
 
-`--protect-files` 必须配合 `--python-hooks`，阻止命中规则的 Python 文件打开操作，包括读取、写入和读写模式。适用于触发 CPython `open` 审计事件的 `open`、`io.open`、`pathlib` 和普通 `os.open` 路径访问。命中后抛出 `PermissionError`，不读取或替换文件内容，独立于危险命令的 block/ask/warn 模式；若程序未处理异常而失败，可配合 `--rollback-on-failure` 恢复会话。
+`--protect-files` 必须配合至少一种运行时 Hook；此处使用 `--python-hooks` 阻止命中规则的 Python 文件打开操作，包括读取、写入和读写模式。适用于触发 CPython `open` 审计事件的 `open`、`io.open`、`pathlib` 和普通 `os.open` 路径访问。命中后抛出 `PermissionError`，不读取或替换文件内容，独立于危险命令的 block/ask/warn 模式；若程序未处理异常而失败，可配合 `--rollback-on-failure` 恢复会话。
 
 配置示例（在已有 privacy 表中修改，不要重复建表）：
 
@@ -156,6 +156,27 @@ agentguard run --python-hooks --node-hooks -- node agent_worker.js
 通过 `NODE_OPTIONS=--require=...` 加载 Hook，保留已有的 `NODE_OPTIONS`。检查 `child_process` 的 `spawn`、`spawnSync`、`exec`、`execSync`、`execFile`、`execFileSync` 和 `fork`，支持 CommonJS、ESM 和 `util.promisify(exec/execFile)`。继承环境的 Node.js 子进程会继续加载检查。命中规则时同步抛出带 `code = "AGENTGUARD_BLOCKED"` 的错误；Promise 包装会拒绝。`warn` 放行，`ask` 按拒绝处理。
 
 Node.js 使用 JavaScript 正则，Python 使用 Python 正则。同一份 `blocked_patterns` 必须兼容启用的运行时；例如 Python 的 `(?i)` 不能用于 Node.js。不兼容的正则会导致 Node.js 启动失败。Hook 检查命令和参数，不检查环境变量或 shell 展开后的内容。应用可替换 Hook、清除环境或直接调用原生接口绕过检查，因此不适用于隔离不可信代码。已有的 Node.js preload 也可能改变其行为。
+
+### Node.js 受保护文件访问检查（可选）
+
+```bash
+agentguard run --node-hooks --protect-files -- node agent_worker.js
+# Python 与 Node.js 相互启动时，分别启用两种 Hook
+agentguard run --python-hooks --node-hooks --protect-files -- node agent_worker.js
+```
+
+沿用 `privacy.protected_files`，与 Python 一样默认关闭、命中即拒绝，不受 dangerous_commands 的 warn/ask 模式影响。glob 从同一份配置转换，支持 `*`、`?`、`[]`，包括否定字符集和 Unicode；`~/` 在受保护 Node.js 进程中展开。相对路径以会话工作区为范围，切换目录后仍生效；检查符号链接目标，并为尚不存在的文件解析已有父目录。
+
+覆盖 [Node.js fs API](https://nodejs.org/api/fs.html) 中以下路径接口：
+
+- 同步：openSync、readFileSync、writeFileSync、appendFileSync。
+- 回调：open、readFile、writeFile、appendFile；拒绝通过异步回调返回，不同步抛出策略错误（未传回调时除外），支持 util.promisify。
+- Promise：fs.promises / node:fs/promises 的 open、readFile、writeFile、appendFile；拒绝时 Promise reject。
+- 流：createReadStream、createWriteStream；受保护路径在创建流之前**同步抛错**，调用方需 try/catch。
+
+支持字符串、UTF-8 Buffer 和 file URL 路径。策略错误 code 为 AGENTGUARD_PROTECTED_FILE，不含文件路径或内容。正常路径沿用原接口返回值。通过 [syncBuiltinESMExports](https://nodejs.org/api/module.html#modulesyncbuiltinesmexports) 同步 ESM 绑定。审计中的 fs.* 事件仅记录阻断，规则编号对应 protected_files，source 为 node；后续 Python/Node.js 子进程及验证命令在继承环境时继续应用各自的 Hook。
+
+这是可被绕过的应用层检查，不覆盖模块加载器内部读取、openAsBlob、copyFile/cp、unlink/rename、预先打开的 fd/FileHandle、直接 new ReadStream/WriteStream、原生扩展、Shell 或清除 Hook 环境的进程。硬链接、大小写别名和检查后替换路径也不能提供系统级隔离。快照仍独立保存文件内容；保护规则不等于快照排除或凭据遮蔽。
 
 ### 会话历史与差异审计
 
@@ -224,7 +245,7 @@ agentguard audit --json --limit 20
 agentguard audit --session <完整会话ID>
 ```
 
-新会话在 `.agentguard/audit/<会话ID>.jsonl` 记录启动检查、实际执行的验证启动，以及启用 Python/Node.js Hook 时的子进程检查事件；启用文件保护后还记录 Python 受保护文件打开的阻断事件。每行包含 UTC 时间、PID、来源、事件名、决策和规则编号，不接受或保存命令参数、规则文本、文件内容。CLI 记录所有命中规则，运行时 Hook 记录首个命中规则；无命中记录 allowed。ask 经用户批准的 CLI 启动记录 confirmed，子进程 ask 仍按 blocked 处理。
+新会话在 `.agentguard/audit/<会话ID>.jsonl` 记录启动检查、实际执行的验证启动，以及启用 Python/Node.js Hook 时的子进程检查事件；启用文件保护后还记录 Python/Node.js 受保护文件访问的阻断事件。每行包含 UTC 时间、PID、来源、事件名、决策和规则编号，不接受或保存命令参数、规则文本、文件内容。CLI 记录所有命中规则，运行时 Hook 记录首个命中规则；无命中记录 allowed。ask 经用户批准的 CLI 启动记录 confirmed，子进程 ask 仍按 blocked 处理。
 
 `audit` 按追加顺序输出最后 N 个事件，`--json` 返回数组。旧会话没有日志时返回空数组。可通过完整 ID 查询已被 max_history 裁剪的会话日志；审计日志单独保留，当前不会被 gc 或会话裁剪删除。文本输出转义终端控制字符。日志文件初始权限为 0600，拒绝符号链接日志路径；日志写入失败会阻止对应的受检查启动，不静默丢弃事件。
 
@@ -448,7 +469,8 @@ max_history = 30
 - [ ] 增量扫描、块级增量、性能基准与步级回滚
 - [x] 可选 Python/Node.js 子进程 Hook 注入器（协作式命令检查）
 - [x] Python 受保护文件打开拦截、自定义路径规则和无内容审计
-- [ ] Node.js 文件访问防护与凭据遮蔽
+- [x] Node.js 常用 fs 接口防护、异步/ESM 兼容与审计
+- [ ] 凭据遮蔽与更广泛文件操作覆盖
 - [ ] macOS 顶部状态栏轻量监控指示灯（显示当前 Agent 危险等级）
 - [ ] 集成 VS Code / Cursor 侧边栏一键 Undo 插件
 

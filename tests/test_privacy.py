@@ -138,5 +138,11 @@ else: raise AssertionError('not blocked')
         policy = FilePolicy(root, ['*.key'])
         self.assertIsNotNone(policy.match(root / 'nested/key.key'))
         self.assertIsNone(policy.match(root.parent / 'outside.key'))
-        with patch.dict(os.environ, {'AGENTGUARD_PRIVACY': 'stale'}):
-            self.assertNotIn('AGENTGUARD_PRIVACY', runtime.environment({}, False, False))
+        Path('vault/nested').mkdir(parents=True)
+        Path('vault/token').write_text('fake')
+        Path('alias_dir').symlink_to('vault/nested', target_is_directory=True)
+        self.assertEqual(FilePolicy(root, ['vault']).match('alias_dir/../token'), 1)
+        with patch.dict(os.environ, {'AGENTGUARD_PRIVACY': 'stale', 'AGENTGUARD_NODE_PRIVACY': 'stale'}):
+            env = runtime.environment({}, False, False)
+            self.assertNotIn('AGENTGUARD_PRIVACY', env)
+            self.assertNotIn('AGENTGUARD_NODE_PRIVACY', env)
