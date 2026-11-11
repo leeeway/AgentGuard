@@ -36,7 +36,7 @@
 
 ### 当前支持的配置
 
-初始化默认使用 `dangerous_commands = "block"`，支持 `block`、`ask`、`warn`，`blocked_patterns` 为 Python 正则列表。`snapshots.max_history` 默认为 30，按会话数量保留历史。`privacy.protected_files` 用于显式启用的 Python/Node.js 文件保护。下文的 mask_mode 和 auto_snapshot 选项属于规划，当前不生效；当前始终创建会话快照。
+初始化默认使用 `dangerous_commands = "block"`，支持 `block`、`ask`、`warn`，`blocked_patterns` 为 Python 正则列表。`snapshots.max_history` 默认为 30，保留最近的普通会话；固定及待处理恢复会话另外保留。`privacy.protected_files` 用于显式启用的 Python/Node.js 文件保护。下文的 mask_mode 和 auto_snapshot 选项属于规划，当前不生效；当前始终创建会话快照。
 
 ### 可复用运行 Profile
 
@@ -222,7 +222,7 @@ agentguard diff --session <完整会话ID>
 agentguard diff --contents --path src/main.py
 ```
 
-历史记录包括会话 ID、状态（complete / incomplete / partially-undone / undone）、UTC 开始与结束时间、退出码、启用的 Hook 和变更路径数量。旧快照缺少的元数据显示为空；没有成功取得进程退出状态时，退出码显示 unknown。只记录会话元数据，不保存启动命令参数。历史随 `max_history` 一同裁剪。
+历史记录包括会话 ID、状态（complete / incomplete / partially-undone / undone）、UTC 开始与结束时间、退出码、启用的 Hook 和变更路径数量。旧快照缺少的元数据显示为空；没有成功取得进程退出状态时，退出码显示 unknown。只记录会话元数据，不保存启动命令参数。普通历史随 `max_history` 裁剪，固定及待处理恢复会话不计入该数量。
 
 `diff` 比较保存的执行前后快照，不读取当前工作区内容。默认只显示新增、删除、修改路径；`--contents` 显式显示 UTF-8 文本 unified diff、权限和符号链接目标，可能包含凭据，请按需使用。二进制内容省略，终端控制字符转义。`--path` 可重复，按工作区相对路径精确匹配。不完整会话没有最终差异；`--session` 使用完整会话 ID，不支持前缀匹配。运行时决策日志见下文“会话决策审计”，不覆盖 shell 内部每条命令。
 
@@ -260,6 +260,24 @@ max_total_bytes = 524288000 # 单次完整清单 500 MiB
 
 执行前超限会阻止命令启动。执行后超限会报错并留下不完整会话，保留执行前快照和当前工作区；无法执行自动恢复或普通 undo，因为缺少完整结束快照。请为构建输出预留预算。已保存会话的撤销不套用后来设置的预算，以免阻断已有恢复数据。
 
+### 关键会话保留与历史裁剪
+
+```bash
+agentguard pin                       # 固定最新保留会话
+agentguard pin --session <完整会话ID>
+agentguard unpin --session <完整会话ID>
+agentguard prune --dry-run           # 预览超出 max_history 的普通会话
+agentguard prune --dry-run --json    # 包括受保护会话及保留原因
+agentguard prune                     # 删除候选会话清单
+agentguard gc --dry-run              # 再检查可释放的内容对象
+```
+
+运行结束后的自动裁剪和 `prune` 使用相同策略：`snapshots.max_history` 限制未受保护的普通会话数量（按会话 ID 从旧到新排序），额外保留 pinned、incomplete、尚未完全撤销的部分恢复会话，以及 automatic_rollback 为 pending/failed 且尚未完全撤销的会话。已完全撤销的失败恢复会话重新参与普通裁剪。实际保留总数因此可能超过 max_history。
+
+`pin/unpin` 默认选择最新保留会话，可使用完整 ID 指定，也可对已撤销会话固定以便审计。取消固定不会立即清理，下一次运行或显式 prune 才会裁剪；它也不会解除 incomplete、部分恢复或未完成自动恢复的保护。`history --json` 增加 pinned 和 retention_reasons，文本历史显示 pinned 状态。旧记录默认未固定。
+
+prune 先校验所有保留快照及内容对象，发现损坏时不删除任何清单。多份清单的删除不是原子事务，删除阶段的 I/O 错误可能导致部分裁剪。操作与运行、撤销、GC 共用工作区锁；预览也需取得锁，但不删除会话或改动源码。它不自动删除内容对象或审计日志；后续 gc 只释放已无保留会话引用的对象。固定并不绕过撤销冲突检查，也不提供跳过中间会话直接覆盖工作区的能力。升级前的版本不认识这些保留标志，请勿用旧版裁剪需要保留的会话。
+
 ### 快照空间回收
 
 ```bash
@@ -287,9 +305,9 @@ agentguard audit --session <完整会话ID>
 
 ### 异常中断后的工作区锁恢复
 
-运行、撤销和 gc 使用 macOS/Linux 的 [fcntl.flock](https://docs.python.org/3/library/fcntl.html#fcntl.flock) 非阻塞排他锁。`.agentguard/workspace.lock` 是持久的内核锁载体，操作结束后继续保留；**不要删除它来解锁**，否则可能产生不同锁文件 inode 并失去互斥。`.agentguard/session.lock` 是当前操作的版本化标记，正常结束时移除。
+运行、撤销、固定会话、裁剪和 gc 使用 macOS/Linux 的 [fcntl.flock](https://docs.python.org/3/library/fcntl.html#fcntl.flock) 非阻塞排他锁。`.agentguard/workspace.lock` 是持久的内核锁载体，操作结束后继续保留；**不要删除它来解锁**，否则可能产生不同锁文件 inode 并失去互斥。`.agentguard/session.lock` 是当前操作的版本化标记，正常结束时移除。
 
-包装器把锁描述符传给直接启动的 Agent 和验证进程，因此包装器被 SIGKILL 后，这些进程仍在运行并保留描述符时，其他 run/undo/gc 仍会被拒绝。它们退出且所有锁描述符释放后，下一次操作拿到内核排他锁，才会自动替换可识别的遗留 session.lock。正常异常退出也会释放持有的描述符。
+包装器把锁描述符传给直接启动的 Agent 和验证进程，因此包装器被 SIGKILL 后，这些进程仍在运行并保留描述符时，其他修改工作区历史的操作仍会被拒绝。它们退出且所有锁描述符释放后，下一次操作拿到内核排他锁，才会自动替换可识别的遗留 session.lock。正常异常退出也会释放持有的描述符。
 
 `doctor --json` 的 workspace-lock 检查带 state：
 
@@ -513,6 +531,7 @@ max_history = 30
 - [x] 会话决策审计日志、Python/Node.js Hook 事件与 JSON 查询
 - [ ] 审计日志保留策略与更广泛进程事件覆盖
 - [x] 内容寻址去重存储、旧快照兼容与垃圾回收预览
+- [x] 会话固定、恢复数据保护与历史裁剪预览
 - [x] 快照容量预检、单文件及总量预算
 - [x] 快照排除规则、会话范围保存及撤销冲突保护
 - [x] 只读健康诊断、多快照完整性报告和处理建议

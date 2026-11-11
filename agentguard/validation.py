@@ -60,6 +60,8 @@ def record(value):
         raise ValueError('Invalid snapshot identifier')
     if value.get('profile') is not None and not valid_name(value['profile']):
         raise ValueError('Invalid run profile name')
+    if 'pinned' in value and type(value['pinned']) is not bool:
+        raise ValueError('Invalid session pin state')
     if 'file_protection' in value and type(value['file_protection']) is not bool:
         raise ValueError('Invalid file protection state')
     if 'undone' in value and type(value['undone']) is not bool:

@@ -9,7 +9,7 @@ import uuid
 
 import click
 
-from . import core, runtime, inspection, objects, inventory, diagnostics, processes, audit, privacy, profiles
+from . import core, runtime, inspection, objects, inventory, diagnostics, processes, audit, privacy, profiles, retention
 from .locking import workspace_lock
 
 
@@ -159,9 +159,7 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
             record['automatic_rollback'] = 'restored'
             core.save(root, record)
             click.echo(f'Command exited {code}; session changes restored.', err=True)
-        maximum = settings.get('snapshots', {}).get('max_history', 30)
-        for old in core.records(root)[:-maximum]:
-            (directory / 'snapshots' / (old['id'] + '.json')).unlink()
+        retention.prune(root, settings.get('snapshots', {}).get('max_history', 30))
     raise click.exceptions.Exit(code if code >= 0 else 128 - code)
 
 
@@ -226,7 +224,7 @@ def history_command(as_json, limit):
     for row in rows:
         code = row['exit_code'] if row['exit_code'] is not None else 'unknown'
         changed = row['changed_paths'] if row['changed_paths'] is not None else 'unknown'
-        click.echo(f"{row['id']}  {row['state']}  exit={code}  changed={changed}  recovery={row['automatic_rollback']}  verification={row['verification']['state']}  profile={row['profile'] or '-'}")
+        click.echo(f"{row['id']}  {row['state']}  exit={code}  changed={changed}  recovery={row['automatic_rollback']}  verification={row['verification']['state']}  profile={row['profile'] or '-'}  pinned={row['pinned']}")
 
 
 @main.command('diff')
@@ -341,6 +339,50 @@ def profiles_command(as_json):
         for row in rows:
             flags = ', '.join(key for key in profiles.BOOLEAN_OPTIONS if row[key]) or 'none'
             click.echo(f"{row['name']}: enabled={flags}; verification={row['verification_count']}; timeout={row['verify_timeout']}")
+
+
+def set_session_pin(session, pinned):
+    root = Path.cwd()
+    core.config(root)
+    with workspace_lock(core.store(root)):
+        record = inspection.select(core.records(root), session)
+        if record.get('pinned', False) != pinned:
+            record['pinned'] = pinned
+            core.save(root, record)
+    click.echo(('Pinned' if pinned else 'Unpinned') + ' session ' + record['id'])
+
+
+@main.command('pin')
+@click.option('--session', help='Full session ID; defaults to the latest retained session.')
+def pin_command(session):
+    """Keep a session outside automatic and manual history limits."""
+    set_session_pin(session, True)
+
+
+@main.command('unpin')
+@click.option('--session', help='Full session ID; defaults to the latest retained session.')
+def unpin_command(session):
+    """Remove an explicit pin; unresolved recovery data remains protected."""
+    set_session_pin(session, False)
+
+
+@main.command('prune')
+@click.option('--dry-run', is_flag=True, help='Preview session manifests that exceed the history limit.')
+@click.option('--json', 'as_json', is_flag=True, help='Emit candidates and protected sessions with reasons.')
+def prune_command(dry_run, as_json):
+    """Trim ordinary session manifests; retain pinned and unresolved sessions."""
+    root = Path.cwd()
+    settings = core.config(root)
+    with workspace_lock(core.store(root)):
+        report = retention.prune(root, settings.get('snapshots', {}).get('max_history', 30), dry_run)
+    if as_json:
+        click.echo(json.dumps(report))
+    else:
+        action = 'Would remove' if dry_run else 'Removed'
+        click.echo(f"{action} {len(report['candidates'])} session manifests; {len(report['protected'])} protected sessions retained.")
+        for session in report['candidates']:
+            click.echo('  ' + session)
+        click.echo('Run gc separately to reclaim unreferenced content objects.')
 
 
 if __name__ == '__main__':

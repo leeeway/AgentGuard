@@ -3,7 +3,7 @@ import base64
 import difflib
 import json
 
-from . import core
+from . import core, retention
 
 
 def summary(record):
@@ -16,6 +16,8 @@ def summary(record):
     return {
         'id': record['id'],
         'profile': record.get('profile'),
+        'pinned': record.get('pinned', False),
+        'retention_reasons': retention.reasons(record),
         'state': state,
         'restored_paths': record.get('restored_paths', []),
         'remaining_paths': (0 if record.get('undone') else len(remaining)) if complete else None,
