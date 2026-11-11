@@ -8,7 +8,7 @@ import shlex
 import stat
 import uuid
 
-from . import validation, objects, inventory, privacy
+from . import validation, objects, inventory, privacy, profiles
 
 try:
     import tomllib
@@ -71,6 +71,7 @@ def config(root):
             raise ValueError(f'snapshots.{key} must be a positive integer')
     validation.exclusions(data.get('snapshots', {}).get('exclude', []))
     privacy.validate(data.get('privacy', {}).get('protected_files', privacy.DEFAULT_PROTECTED))
+    profiles.validate(data.get('profiles', {}))
     return data
 
 

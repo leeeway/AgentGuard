@@ -38,6 +38,40 @@
 
 初始化默认使用 `dangerous_commands = "block"`，支持 `block`、`ask`、`warn`，`blocked_patterns` 为 Python 正则列表。`snapshots.max_history` 默认为 30，按会话数量保留历史。`privacy.protected_files` 用于显式启用的 Python/Node.js 文件保护。下文的 mask_mode 和 auto_snapshot 选项属于规划，当前不生效；当前始终创建会话快照。
 
+### 可复用运行 Profile
+
+在 `.agentguard/config.toml` 添加命名配置：
+
+```toml
+[profiles.python_ci]
+python_hooks = true
+protect_files = true
+rollback_on_failure = true
+verify = ["python -m unittest discover -s tests"]
+verify_timeout = 120
+
+[profiles.node_dev]
+node_hooks = true
+protect_files = true
+```
+
+```bash
+agentguard profiles                 # 查看配置名称和能力摘要
+agentguard profiles --json
+agentguard run --profile python_ci -- python agent_worker.py
+agentguard run --profile node_dev -- node agent_worker.js
+# 仅本次保留失败改动
+agentguard run --profile python_ci --no-rollback-on-failure -- python agent_worker.py
+# 仅本次跳过保存的验证和验证超时
+agentguard run --profile python_ci --no-verify -- python agent_worker.py
+```
+
+Profile 只有显式通过 `--profile` 选择才生效，不保存或替换主 Agent 命令。名称支持字母、数字、下划线和连字符，首位须为字母或数字。支持的键为 python_hooks、node_hooks、protect_files、rollback_on_failure（布尔值）、verify（命令字符串数组）、verify_timeout（有限正数秒数）；未知键、类型错误和无效命令引号会在读取配置时报告。profile 不改变 safety、privacy 或 snapshots 的工作区策略。
+
+优先级为：内置默认值 → 指定 profile → 显式命令行选项。四个布尔参数均支持 `--no-python-hooks`、`--no-node-hooks`、`--no-protect-files`、`--no-rollback-on-failure` 关闭。命令行提供任何 `--verify` 时，会**替换** profile 的整个验证列表；未提供则沿用，超时仍按同样优先级合并。`--no-verify` 清除验证与超时，不能与显式 `--verify` / `--verify-timeout` 同用。组合后的文件保护仍要求至少一种 Hook，超时仍要求验证命令。
+
+验证命令在运行前与启动命令一起检查，profile 不绕过确认或阻断。verify 中不隐式执行 shell 展开。`profiles` 列表只显示能力、验证数量和超时，不显示验证命令参数；`history` 保存选用名称和实际生效选项的元数据，不复制验证命令文本。配置在启动时读取，执行过程中修改它不会改变本次已解析的验证或防护选项。请将 profile 配置视为可执行配置，只使用已审阅的验证命令。
+
 ### 按文件撤销
 
 ```bash
@@ -458,6 +492,7 @@ max_history = 30
 - [x] 按文件/符号链接撤销、部分恢复状态与剩余变更跟踪
 - [x] 可选失败自动恢复，保留退出码与失败差异审计
 - [x] 顺序验证命令、失败停止及验证失败自动恢复
+- [x] 命名运行 Profile、显式命令行覆盖与能力查询
 - [x] 验证超时、进程组清理和超时审计
 - [x] 会话历史、JSON 元数据与按路径查看文本差异
 - [x] 会话决策审计日志、Python/Node.js Hook 事件与 JSON 查询

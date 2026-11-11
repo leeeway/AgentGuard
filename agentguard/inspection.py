@@ -15,6 +15,7 @@ def summary(record):
         state = 'undone'
     return {
         'id': record['id'],
+        'profile': record.get('profile'),
         'state': state,
         'restored_paths': record.get('restored_paths', []),
         'remaining_paths': (0 if record.get('undone') else len(remaining)) if complete else None,

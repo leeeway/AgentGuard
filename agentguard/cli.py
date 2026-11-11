@@ -10,7 +10,7 @@ import uuid
 
 import click
 
-from . import core, runtime, inspection, objects, inventory, diagnostics, processes, audit, privacy
+from . import core, runtime, inspection, objects, inventory, diagnostics, processes, audit, privacy, profiles
 
 
 class GuardGroup(click.Group):
@@ -35,21 +35,36 @@ def init():
 
 
 @main.command(context_settings={'ignore_unknown_options': True})
-@click.option('--python-hooks', is_flag=True, help='Inject cooperative subprocess checks into Python interpreters.')
-@click.option('--protect-files', is_flag=True, help='Block protected paths in enabled Python/Node.js hooks.')
-@click.option('--node-hooks', is_flag=True, help='Inject cooperative child_process checks into Node.js.')
-@click.option('--rollback-on-failure', is_flag=True, help='Restore this session when the command exits nonzero.')
+@click.option('--profile', help='Use named run settings from profiles in config.toml.')
+@click.option('--python-hooks/--no-python-hooks', default=None, help='Inject cooperative subprocess checks into Python interpreters.')
+@click.option('--protect-files/--no-protect-files', default=None, help='Block protected paths in enabled Python/Node.js hooks.')
+@click.option('--node-hooks/--no-node-hooks', default=None, help='Inject cooperative child_process checks into Node.js.')
+@click.option('--rollback-on-failure/--no-rollback-on-failure', default=None, help='Restore this session when the command exits nonzero.')
+@click.option('--no-verify', is_flag=True, help='Disable profile verification and its timeout for this run.')
 @click.option('--verify', multiple=True, help='Validation command after success; repeat to run checks in order.')
 @click.option('--verify-timeout', type=click.FloatRange(min=0, min_open=True), help='Maximum seconds per verification command (noninteractive).')
 @click.argument('command', nargs=-1, type=click.UNPROCESSED, required=True)
-def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_timeout, protect_files):
+def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_timeout, protect_files, profile, no_verify):
     """Check a launch command, snapshot the workspace, and execute it."""
+    if no_verify and (verify or verify_timeout is not None):
+        raise click.UsageError('--no-verify cannot be combined with --verify or --verify-timeout.')
+    root = Path.cwd()
+    settings = core.config(root)
+    selected = profiles.resolve(settings, profile, {
+        'python_hooks': python_hooks, 'node_hooks': node_hooks,
+        'protect_files': protect_files, 'rollback_on_failure': rollback_on_failure,
+        'verify': list(verify) if verify else None, 'verify_timeout': verify_timeout,
+    })
+    python_hooks = selected['python_hooks']
+    node_hooks = selected['node_hooks']
+    protect_files = selected['protect_files']
+    rollback_on_failure = selected['rollback_on_failure']
+    verify = [] if no_verify else selected['verify']
+    verify_timeout = None if no_verify else selected['verify_timeout']
     if protect_files and not (python_hooks or node_hooks):
         raise click.UsageError('--protect-files requires --python-hooks or --node-hooks.')
     if verify_timeout is not None and (not math.isfinite(verify_timeout) or not verify):
         raise click.UsageError('--verify-timeout requires --verify and a finite positive duration.')
-    root = Path.cwd()
-    settings = core.config(root)
     if protect_files and not settings.get('privacy', {}).get('protected_files', privacy.DEFAULT_PROTECTED):
         raise click.ClickException('--protect-files requires at least one privacy.protected_files rule.')
     directory = core.store(root)
@@ -81,6 +96,7 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
         record = {
             'id': f'{time.time_ns():020d}-{uuid.uuid4().hex}',
             'started_at': datetime.now(timezone.utc).isoformat(),
+            'profile': profile,
             'file_protection': protect_files,
             'hooks': [name for name, enabled in [('python', python_hooks), ('node', node_hooks)] if enabled],
             'automatic_rollback': 'pending' if rollback_on_failure else 'disabled',
@@ -224,7 +240,7 @@ def history_command(as_json, limit):
     for row in rows:
         code = row['exit_code'] if row['exit_code'] is not None else 'unknown'
         changed = row['changed_paths'] if row['changed_paths'] is not None else 'unknown'
-        click.echo(f"{row['id']}  {row['state']}  exit={code}  changed={changed}  recovery={row['automatic_rollback']}  verification={row['verification']['state']}")
+        click.echo(f"{row['id']}  {row['state']}  exit={code}  changed={changed}  recovery={row['automatic_rollback']}  verification={row['verification']['state']}  profile={row['profile'] or '-'}")
 
 
 @main.command('diff')
@@ -322,6 +338,23 @@ def audit_command(session, as_json, limit):
     else:
         for row in rows:
             click.echo(json.dumps(row, ensure_ascii=True))
+
+
+@main.command('profiles')
+@click.option('--json', 'as_json', is_flag=True, help='Emit profile capabilities without verification command arguments.')
+def profiles_command(as_json):
+    """List named run configurations and their capabilities."""
+    settings = core.config(Path.cwd())
+    rows = [profiles.summary(name, profiles.resolve(settings, name, {}))
+            for name in sorted(settings.get('profiles', {}))]
+    if as_json:
+        click.echo(json.dumps(rows))
+    elif not rows:
+        click.echo('No run profiles configured.')
+    else:
+        for row in rows:
+            flags = ', '.join(key for key in profiles.BOOLEAN_OPTIONS if row[key]) or 'none'
+            click.echo(f"{row['name']}: enabled={flags}; verification={row['verification_count']}; timeout={row['verify_timeout']}")
 
 
 if __name__ == '__main__':

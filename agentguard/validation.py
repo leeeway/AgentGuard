@@ -5,6 +5,8 @@ from pathlib import PurePosixPath
 import re
 import math
 
+from .profiles import valid_name
+
 
 def manifest(value):
     if not isinstance(value, dict):
@@ -56,6 +58,8 @@ def record(value):
         manifest(value['after'])
     if not isinstance(value.get('id'), str) or not re.fullmatch(r'[0-9]{20}-[0-9a-f]{32}', value['id']):
         raise ValueError('Invalid snapshot identifier')
+    if value.get('profile') is not None and not valid_name(value['profile']):
+        raise ValueError('Invalid run profile name')
     if 'file_protection' in value and type(value['file_protection']) is not bool:
         raise ValueError('Invalid file protection state')
     if 'undone' in value and type(value['undone']) is not bool:
