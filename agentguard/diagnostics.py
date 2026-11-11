@@ -1,15 +1,16 @@
 """Read-only health checks; never repair, delete locks, or disclose file contents."""
-from . import core, objects
+from . import core, objects, locking
 
 
 def inspect(root):
     checks = []
-    def add(code, level, message, action=None, session=None):
+    def add(code, level, message, action=None, session=None, **details):
         row = {'code': code, 'level': level, 'message': message}
         if action:
             row['action'] = action
         if session:
             row['session'] = session
+        row.update(details)
         checks.append(row)
 
     try:
@@ -24,11 +25,22 @@ def inspect(root):
             add('empty-policy', 'warning', 'No launch command rules are configured.', 'Configure safety.blocked_patterns if command checks are intended.')
     except (OSError, ValueError) as exc:
         add('configuration', 'error', str(exc), 'Initialize the workspace or correct .agentguard/config.toml.')
-    lock = folder / 'session.lock'
-    if lock.exists() or lock.is_symlink():
-        add('workspace-lock', 'warning', 'A workspace lock exists; activity or staleness is not determined.', 'Do not remove the lock until all AgentGuard sessions have stopped. Results may change during an active session.')
-    else:
-        add('workspace-lock', 'ok', 'No workspace lock found.')
+    try:
+        lock = locking.status(folder)
+        state = lock['state']
+        if state == 'active':
+            add('workspace-lock', 'warning', 'A live operation or direct child holds the kernel workspace lock.',
+                'Wait for it to finish; do not remove lock files.', state=state)
+        elif state == 'recoverable':
+            add('workspace-lock', 'warning', 'The kernel lock is free; a recognized interrupted-session marker remains.',
+                'The next run, undo or gc will reclaim this marker. Inspect incomplete sessions separately.', state=state)
+        elif state == 'legacy':
+            add('workspace-lock', 'warning', 'A legacy or unrecognized session marker remains; ownership cannot be established.',
+                'Remove only session.lock after confirming all old sessions and child processes have stopped.', state=state)
+        else:
+            add('workspace-lock', 'ok', 'Workspace kernel lock is free.', state=state)
+    except (OSError, ValueError) as exc:
+        add('workspace-lock', 'error', str(exc), 'Inspect lock file paths without deleting an active workspace.lock.')
     try:
         objects.directory(root)
         add('object-storage', 'ok', 'Object storage path is valid; referenced contents are checked below.')

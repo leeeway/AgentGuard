@@ -1,4 +1,3 @@
-from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
@@ -11,6 +10,7 @@ import uuid
 import click
 
 from . import core, runtime, inspection, objects, inventory, diagnostics, processes, audit, privacy, profiles
+from .locking import workspace_lock
 
 
 class GuardGroup(click.Group):
@@ -69,7 +69,7 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
         raise click.ClickException('--protect-files requires at least one privacy.protected_files rule.')
     directory = core.store(root)
     # Exclusive lock prevents concurrent sessions and undo in this workspace.
-    with workspace_lock(directory):
+    with workspace_lock(directory) as lock_fd:
         validators = []
         for index, text in enumerate(verify, 1):
             try:
@@ -113,7 +113,7 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
         audit.append(audit_path, 'cli', 'launch', 'confirmed' if decision['decision'] == 'confirmation-required' else decision['decision'], decision['matched_rules'])
         env = runtime.environment(settings, python_hooks, node_hooks, audit_path=audit_path, protected_root=root if protect_files else None)
         try:
-            result = subprocess.run(command, check=False, env=env)
+            result = subprocess.run(command, check=False, env=env, pass_fds=(lock_fd,))
             code = result.returncode
             record['command_exit_code'] = code
             if validators:
@@ -124,7 +124,7 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
                     decision = core.evaluate(argv, settings)
                     audit.append(audit_path, 'cli', f'verification.{index}', 'confirmed' if decision['decision'] == 'confirmation-required' else decision['decision'], decision['matched_rules'])
                     try:
-                        code, timed_out = processes.verify(argv, env, verify_timeout)
+                        code, timed_out = processes.verify(argv, env, verify_timeout, lock_fd=lock_fd)
                         if timed_out:
                             record['verification']['timed_out'].append(index)
                             click.echo(f'Verification command {index} timed out; process group stopped.', err=True)
@@ -163,20 +163,6 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
         for old in core.records(root)[:-maximum]:
             (directory / 'snapshots' / (old['id'] + '.json')).unlink()
     raise click.exceptions.Exit(code if code >= 0 else 128 - code)
-
-
-@contextmanager
-def workspace_lock(directory):
-    path = directory / 'session.lock'
-    try:
-        stream = path.open('x')
-    except FileExistsError:
-        raise click.ClickException('Workspace is locked. If no session is running, remove .agentguard/session.lock.')
-    try:
-        with stream:
-            yield
-    finally:
-        path.unlink()
 
 
 @main.command()

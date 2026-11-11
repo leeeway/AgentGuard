@@ -21,10 +21,11 @@ def stop_group(process):
         process.wait()
 
 
-def verify(command, env, timeout=None):
+def verify(command, env, timeout=None, lock_fd=None):
+    descriptors = () if lock_fd is None else (lock_fd,)
     if timeout is None:
-        return subprocess.run(command, check=False, env=env).returncode, False
-    process = subprocess.Popen(command, env=env, start_new_session=True, stdin=subprocess.DEVNULL)
+        return subprocess.run(command, check=False, env=env, pass_fds=descriptors).returncode, False
+    process = subprocess.Popen(command, env=env, start_new_session=True, stdin=subprocess.DEVNULL, pass_fds=descriptors)
     try:
         return process.wait(timeout=timeout), False
     except subprocess.TimeoutExpired:
