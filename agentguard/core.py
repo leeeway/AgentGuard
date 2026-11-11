@@ -8,7 +8,7 @@ import shlex
 import stat
 import uuid
 
-from . import validation, objects, inventory
+from . import validation, objects, inventory, privacy
 
 try:
     import tomllib
@@ -18,6 +18,9 @@ except ImportError:
 DEFAULT_CONFIG = '''[safety]
 dangerous_commands = "block"
 blocked_patterns = ['\\brm\\b.*(?:-[a-zA-Z]*[rf]|--recursive|--force)', '\\bgit\\s+push\\b.*(?:--force|-f)', '\\bgit\\s+reset\\s+--hard', '\\bmkfs', '\\bdd\\s+if=', '>\\s*/etc/']
+
+[privacy]
+protected_files = ['.env*', '**/.env*', '*.pem', '*.key', '~/.ssh', '~/.aws/credentials', '~/.config/gcloud']
 
 [snapshots]
 max_history = 30
@@ -45,7 +48,7 @@ def config(root):
         raise ValueError('Run agentguard init in this directory first.')
     with path.open('rb') as stream:
         data = tomllib.load(stream)
-    for section in ('safety', 'snapshots'):
+    for section in ('safety', 'snapshots', 'privacy'):
         if not isinstance(data.get(section, {}), dict):
             raise ValueError(f'{section} must be a TOML table')
     safety = data.get('safety', {})
@@ -67,6 +70,7 @@ def config(root):
         if limit is not None and (type(limit) is not int or limit < 1):
             raise ValueError(f'snapshots.{key} must be a positive integer')
     validation.exclusions(data.get('snapshots', {}).get('exclude', []))
+    privacy.validate(data.get('privacy', {}).get('protected_files', privacy.DEFAULT_PROTECTED))
     return data
 
 

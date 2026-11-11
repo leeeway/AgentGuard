@@ -10,7 +10,7 @@ import uuid
 
 import click
 
-from . import core, runtime, inspection, objects, inventory, diagnostics, processes, audit
+from . import core, runtime, inspection, objects, inventory, diagnostics, processes, audit, privacy
 
 
 class GuardGroup(click.Group):
@@ -36,17 +36,22 @@ def init():
 
 @main.command(context_settings={'ignore_unknown_options': True})
 @click.option('--python-hooks', is_flag=True, help='Inject cooperative subprocess checks into Python interpreters.')
+@click.option('--protect-files', is_flag=True, help='Block protected file opens in hooked Python interpreters; requires --python-hooks.')
 @click.option('--node-hooks', is_flag=True, help='Inject cooperative child_process checks into Node.js.')
 @click.option('--rollback-on-failure', is_flag=True, help='Restore this session when the command exits nonzero.')
 @click.option('--verify', multiple=True, help='Validation command after success; repeat to run checks in order.')
 @click.option('--verify-timeout', type=click.FloatRange(min=0, min_open=True), help='Maximum seconds per verification command (noninteractive).')
 @click.argument('command', nargs=-1, type=click.UNPROCESSED, required=True)
-def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_timeout):
+def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_timeout, protect_files):
     """Check a launch command, snapshot the workspace, and execute it."""
+    if protect_files and not python_hooks:
+        raise click.UsageError('--protect-files requires --python-hooks; other runtimes are not covered.')
     if verify_timeout is not None and (not math.isfinite(verify_timeout) or not verify):
         raise click.UsageError('--verify-timeout requires --verify and a finite positive duration.')
     root = Path.cwd()
     settings = core.config(root)
+    if protect_files and not settings.get('privacy', {}).get('protected_files', privacy.DEFAULT_PROTECTED):
+        raise click.ClickException('--protect-files requires at least one privacy.protected_files rule.')
     directory = core.store(root)
     # Exclusive lock prevents concurrent sessions and undo in this workspace.
     with workspace_lock(directory):
@@ -72,10 +77,11 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
                 if mode == 'ask' and not click.confirm(f'{label} matches safety rules. Continue?', default=False):
                     raise click.ClickException('Launch cancelled.')
                 click.echo(f'Warning: {label} matches safety rules.', err=True)
-        click.echo('Session snapshots enabled. ' + ('Opt-in runtime hooks enabled; secret reads are not intercepted.' if python_hooks or node_hooks else 'Child commands and secret reads are not intercepted.'), err=True)
+        click.echo('Session snapshots enabled. ' + ('Python protected-file opens are blocked.' if protect_files else 'Protected-file blocking is disabled.'), err=True)
         record = {
             'id': f'{time.time_ns():020d}-{uuid.uuid4().hex}',
             'started_at': datetime.now(timezone.utc).isoformat(),
+            'file_protection': protect_files,
             'hooks': [name for name, enabled in [('python', python_hooks), ('node', node_hooks)] if enabled],
             'automatic_rollback': 'pending' if rollback_on_failure else 'disabled',
             'verification': {'requested': len(validators), 'exit_codes': [], 'state': 'pending' if validators else 'disabled'},
@@ -89,7 +95,7 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
         audit_path = audit.initialize(root, record['id'])
         decision = core.evaluate(command, settings)
         audit.append(audit_path, 'cli', 'launch', 'confirmed' if decision['decision'] == 'confirmation-required' else decision['decision'], decision['matched_rules'])
-        env = runtime.environment(settings, python_hooks, node_hooks, audit_path=audit_path)
+        env = runtime.environment(settings, python_hooks, node_hooks, audit_path=audit_path, protected_root=root if protect_files else None)
         try:
             result = subprocess.run(command, check=False, env=env)
             code = result.returncode
@@ -188,7 +194,7 @@ def status():
     core.config(root)
     history = core.records(root)
     click.echo(f'Sessions: {len(history)}')
-    click.echo('Protection: launch-command checks; optional Python/Node hooks via run flags; no credential interception.')
+    click.echo('Protection: launch-command checks; optional Python/Node command hooks; Python file-open blocking via --protect-files.')
     pending = [r for r in history if not r.get('undone')]
     if pending:
         record = pending[-1]

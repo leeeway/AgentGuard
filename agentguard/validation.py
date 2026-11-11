@@ -56,6 +56,8 @@ def record(value):
         manifest(value['after'])
     if not isinstance(value.get('id'), str) or not re.fullmatch(r'[0-9]{20}-[0-9a-f]{32}', value['id']):
         raise ValueError('Invalid snapshot identifier')
+    if 'file_protection' in value and type(value['file_protection']) is not bool:
+        raise ValueError('Invalid file protection state')
     if 'undone' in value and type(value['undone']) is not bool:
         raise ValueError('Invalid snapshot undo state')
     if 'restored_paths' in value:

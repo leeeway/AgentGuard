@@ -28,7 +28,7 @@
 - `agentguard undo --dry-run`：预检快照和冲突，列出待恢复路径，不修改文件或会话状态。
 - `agentguard undo` / `undo --all`：当前均撤销最近一次完整会话；再次执行可撤销更早的会话。若会话结束后相关文件又被修改，会拒绝整个撤销。
 
-**保护边界：**当前不是安全沙箱，默认不拦截子进程；可选 Python/Node.js Hook 只检查支持的进程启动事件，不拦截文件读取或网络访问，也没有凭据遮蔽功能。启动命令正则检查可以被绕过，不能用于运行不可信代码。会话期间请勿同时手动编辑工作区：快照无法区分同时发生的人为编辑和 Agent 编辑。后台进程必须在会话结束前退出。
+**保护边界：**当前不是安全沙箱，默认不拦截子进程；可选 Python/Node.js Hook 检查支持的进程启动事件；Python 可另行启用受保护文件打开拦截，不拦截网络访问，也没有凭据遮蔽功能。启动命令正则检查可以被绕过，不能用于运行不可信代码。会话期间请勿同时手动编辑工作区：快照无法区分同时发生的人为编辑和 Agent 编辑。后台进程必须在会话结束前退出。
 
 新快照将文件清单存放于 `.agentguard/snapshots`，文件内容按 SHA-256 哈希去重存放于 `.agentguard/objects`；相同内容跨文件、跨会话共享一个对象。记录文件权限和符号链接，不跟随符号链接。旧版内嵌内容的快照仍可读取和撤销。跳过所有 `.git` 和 `.agentguard` 目录项；因此不恢复 Git 元数据，也不恢复指向工作区外的文件内容。包含未跟踪、被 Git 忽略的文件及密钥文件，快照未加密，请将 `.agentguard/` 保持在 Git 忽略列表中。当前实现内容去重，但每次仍扫描和读取整个工作区，变更文件保存完整内容，不是块级增量；没有微秒级性能保证，大型工作区仍需评估扫描与内存开销。
 
@@ -36,7 +36,7 @@
 
 ### 当前支持的配置
 
-初始化默认使用 `dangerous_commands = "block"`，支持 `block`、`ask`、`warn`，`blocked_patterns` 为 Python 正则列表。`snapshots.max_history` 默认为 30，按会话数量保留历史。下文的 privacy 配置和 auto_snapshot 选项属于规划，当前不生效；当前始终创建会话快照。
+初始化默认使用 `dangerous_commands = "block"`，支持 `block`、`ask`、`warn`，`blocked_patterns` 为 Python 正则列表。`snapshots.max_history` 默认为 30，按会话数量保留历史。`privacy.protected_files` 用于显式启用的 Python 文件保护。下文的 mask_mode 和 auto_snapshot 选项属于规划，当前不生效；当前始终创建会话快照。
 
 ### 按文件撤销
 
@@ -119,6 +119,32 @@ agentguard run --python-hooks -- python agent_worker.py
 
 这是协作式防误操作机制。`python -I/-E/-S`、清除环境、其他语言进程、原生扩展和未覆盖的系统调用可能绕过它；不会监控 shell 内部执行的每条命令。注入会优先加载 AgentGuard 的 `sitecustomize`，现有同名启动模块不会自动串联，依赖此模块的环境请勿启用。Node.js 使用下述独立开关启用。
 
+### Python 受保护文件打开拦截（可选）
+
+```bash
+agentguard run --python-hooks --protect-files -- python agent_worker.py
+```
+
+`--protect-files` 必须配合 `--python-hooks`，阻止命中规则的 Python 文件打开操作，包括读取、写入和读写模式。适用于触发 CPython `open` 审计事件的 `open`、`io.open`、`pathlib` 和普通 `os.open` 路径访问。命中后抛出 `PermissionError`，不读取或替换文件内容，独立于危险命令的 block/ask/warn 模式；若程序未处理异常而失败，可配合 `--rollback-on-failure` 恢复会话。
+
+配置示例（在已有 privacy 表中修改，不要重复建表）：
+
+```toml
+[privacy]
+protected_files = [
+    ".env*", "**/.env*", "*.pem", "*.key",
+    "~/.ssh", "~/.aws/credentials", "~/.config/gcloud"
+]
+```
+
+这是缺省规则；显式配置会替换默认列表。启用保护时规则不能为空。相对 glob 针对启动时的工作区，支持 `*`、`?`、`[]`，其中 `*` 可跨路径分隔符。绝对路径及 `~/` 相对受保护 Python 进程的家目录匹配；目录命中时，其后代也受保护。规则区分大小写，不支持环境变量插值。检查命名路径和解析后的符号链接目标，切换工作目录不改变原工作区范围。继承 Hook 环境的 Python 子进程和验证命令沿用策略。
+
+`audit` 中的 `file.open` 只记录阻断事件，rules 指向 protected_files 的 1-based 编号，而不是 blocked_patterns；不记录被访问路径或内容。`history --json` 的 file_protection 表示是否启用了此功能。正常文件打开不逐条记录，避免审计日志膨胀。
+
+保护只在 Hook 安装后生效，不覆盖 Python 启动早期读取、预先打开的文件描述符、原生扩展直接系统调用、dir_fd 相对访问、硬链接别名、路径替换竞态或其他语言/Shell 进程，也不拦截 unlink/rename。`-I/-E/-S` 或清除环境仍可绕过。未实现凭据伪装、网络过滤或输出遮蔽。该机制依据 [CPython open 审计事件](https://docs.python.org/3/library/audit_events.html)；[Python 文档](https://docs.python.org/3/library/sys.html#sys.addaudithook) 明确将 Python 级 audit hooks 定位为可被绕过的机制。
+
+文件打开保护与快照排除是两套独立策略：包装器仍会快照工作区中的密钥文件，内容未加密；若不希望保存，应同时配置 snapshots.exclude，但被排除文件将无法回滚。被保护规则命中的脚本或依赖也会被拒绝打开，请缩小过宽的规则。
+
 ### Node.js 子进程命令检查（可选）
 
 ```bash
@@ -198,7 +224,7 @@ agentguard audit --json --limit 20
 agentguard audit --session <完整会话ID>
 ```
 
-新会话在 `.agentguard/audit/<会话ID>.jsonl` 记录启动检查、实际执行的验证启动，以及启用 Python/Node.js Hook 时的子进程检查事件。每行包含 UTC 时间、PID、来源、事件名、决策和规则编号，不接受或保存命令参数、规则文本、文件内容。CLI 记录所有命中规则，运行时 Hook 记录首个命中规则；无命中记录 allowed。ask 经用户批准的 CLI 启动记录 confirmed，子进程 ask 仍按 blocked 处理。
+新会话在 `.agentguard/audit/<会话ID>.jsonl` 记录启动检查、实际执行的验证启动，以及启用 Python/Node.js Hook 时的子进程检查事件；启用文件保护后还记录 Python 受保护文件打开的阻断事件。每行包含 UTC 时间、PID、来源、事件名、决策和规则编号，不接受或保存命令参数、规则文本、文件内容。CLI 记录所有命中规则，运行时 Hook 记录首个命中规则；无命中记录 allowed。ask 经用户批准的 CLI 启动记录 confirmed，子进程 ask 仍按 blocked 处理。
 
 `audit` 按追加顺序输出最后 N 个事件，`--json` 返回数组。旧会话没有日志时返回空数组。可通过完整 ID 查询已被 max_history 裁剪的会话日志；审计日志单独保留，当前不会被 gc 或会话裁剪删除。文本输出转义终端控制字符。日志文件初始权限为 0600，拒绝符号链接日志路径；日志写入失败会阻止对应的受检查启动，不静默丢弃事件。
 
@@ -421,6 +447,8 @@ max_history = 30
 - [x] 只读健康诊断、多快照完整性报告和处理建议
 - [ ] 增量扫描、块级增量、性能基准与步级回滚
 - [x] 可选 Python/Node.js 子进程 Hook 注入器（协作式命令检查）
+- [x] Python 受保护文件打开拦截、自定义路径规则和无内容审计
+- [ ] Node.js 文件访问防护与凭据遮蔽
 - [ ] macOS 顶部状态栏轻量监控指示灯（显示当前 Agent 危险等级）
 - [ ] 集成 VS Code / Cursor 侧边栏一键 Undo 插件
 
