@@ -1,4 +1,4 @@
-from fnmatch import fnmatchcase
+from fnmatch import fnmatchcase, translate
 import json
 from pathlib import Path
 import shlex
@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 from click.testing import CliRunner
 from agentguard.cli import main
 from agentguard import core
@@ -160,3 +161,30 @@ catch(e) { if(e.code !== 'AGENTGUARD_PROTECTED_FILE') throw e; }
         script = "const p=JSON.parse(process.argv[1]); console.log(JSON.stringify(p.rules.map(r=>{const re=new RegExp('^(?:'+r.body+')(?![\\\\s\\\\S])','su'); return p.names.map(n=>re.test(n));})));"
         result = subprocess.run([shutil.which('node'), '-e', script, json.dumps(payload)], capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout), [[fnmatchcase(n, p) for n in names] for p in patterns])
+
+    def test_python310_named_captures_work_in_node_policy(self):
+        # Shapes emitted by CPython 3.10 fnmatch.translate; keep this regression
+        # active even when the test host uses 3.11+ atomic-group translations.
+        legacy = {
+            '**/.env*': r'(?s:(?=(?P<g3>.*?/\.env))(?P=g3).*)\Z',
+            'a*b*c': r'(?s:a(?=(?P<g4>.*?b))(?P=g4).*c)\Z',
+            '*a*b*c*': r'(?s:(?=(?P<g5>.*?a))(?P=g5)(?=(?P<g6>.*?b))(?P=g6)(?=(?P<g7>.*?c))(?P=g7).*)\Z',
+        }
+        def python310(pattern):
+            return legacy[pattern] if pattern in legacy else translate(pattern)
+        patterns = list(legacy)
+        names = ['dir/.env', 'dir/.env.local', '.env', 'abc', 'a12b34c', 'zabcx', 'acb', 'a\nb\nc', 'x']
+        with patch('agentguard.privacy.translate', side_effect=python310):
+            payload = {'rules': node_rules(patterns), 'names': names}
+            script = "const p=JSON.parse(process.argv[1]); console.log(JSON.stringify(p.rules.map(r=>{const re=new RegExp('^(?:'+r.body+')(?![\\\\s\\\\S])','su'); return p.names.map(n=>re.test(n));})));"
+            result = subprocess.run([shutil.which('node'), '-e', script, json.dumps(payload)], capture_output=True, text=True, check=True)
+            self.assertEqual(json.loads(result.stdout), [[fnmatchcase(n, p) for n in names] for p in patterns])
+            Path('nested').mkdir()
+            Path('nested/.env.test').write_text('FAKE_SECRET')
+            result = self.execute("""const fs = require('node:fs');
+for (const file of ['.env', 'nested/.env.test']) {
+  try { fs.readFileSync(file); throw Error('not protected'); }
+  catch(e) { if(e.code !== 'AGENTGUARD_PROTECTED_FILE') throw e; }
+}
+""")
+            self.assertEqual(result.exit_code, 0, result.output)

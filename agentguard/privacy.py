@@ -1,6 +1,7 @@
 """Cooperative Python file-open policy; never reads protected contents."""
 from fnmatch import fnmatchcase, translate
 import os
+import re
 from pathlib import Path
 
 DEFAULT_PROTECTED = [
@@ -100,5 +101,9 @@ def node_rules(patterns):
         if not translated.startswith('(?s:') or translated[-3:] not in (')\\Z', ')\\z'):
             raise ValueError('Unsupported glob translation for Node.js protection')
         body = _javascript_classes(translated[4:-3].replace('(?>', '(?:'))
+        # Python 3.10 emulates atomic interior stars with named lookahead
+        # captures and backreferences. Preserve them using JavaScript syntax.
+        body = re.sub(r'\(\?P<(g[0-9]+)>', r'(?<\1>', body)
+        body = re.sub(r'\(\?P=(g[0-9]+)\)', lambda match: '\\k<' + match[1] + '>', body)
         result.append({'body': body, 'home': home, 'absolute': home or os.path.isabs(pattern)})
     return result
