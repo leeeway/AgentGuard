@@ -187,6 +187,33 @@ def undo(undo_all, dry_run, paths):
     click.echo('Restored selected paths.' if paths else 'Restored the latest session.')
 
 
+@main.command('redo')
+@click.option('--session', help='Full session ID; defaults to the most recently undone session.')
+@click.option('--dry-run', is_flag=True, help='Preview redo and check conflicts without changing files.')
+@click.option('--path', 'paths', multiple=True, help='Reapply only this exact relative file/link path; repeatable.')
+def redo_command(session, dry_run, paths):
+    """Reapply recorded agent results for previously undone paths."""
+    root = Path.cwd()
+    core.config(root)
+    with workspace_lock(core.store(root)):
+        history = core.records(root)
+        if session is not None:
+            record = inspection.select(history, session)
+        else:
+            candidates = [record for record in history if core.undone_paths(record)]
+            if not candidates:
+                click.echo('No sessions to redo.')
+                return
+            record = max(candidates, key=lambda r: r.get('last_undo_ns', 0))
+        touched = core.reapply(root, record, dry_run=dry_run, paths=paths)
+        if dry_run:
+            for path in touched:
+                click.echo('would reapply: ' + json.dumps(path, ensure_ascii=False))
+            click.echo(f'Redo preview: {len(touched)} paths; no workspace files changed.')
+        else:
+            click.echo(f"Reapplied {len(touched)} paths from session {record['id']}.")
+
+
 @main.command()
 def status():
     """Show changes recorded in the latest session."""

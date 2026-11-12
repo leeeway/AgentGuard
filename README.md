@@ -84,6 +84,23 @@ agentguard undo   # 继续撤销该会话剩余改动
 
 当前支持常规文件和符号链接的新增、修改、删除；目录本身、涉及目录的类型转换，以及需要重建缺失父目录的恢复必须使用完整 `undo`。部分恢复会记入 restored_paths，历史状态为 partially-undone，并显示 remaining_paths；`status` 隐藏已恢复路径，`diff` 仍保留完整原始差异。后续完整撤销跳过已恢复路径，因此其后的人工编辑会保留；若这些文件妨碍恢复目录结构，则仍拒绝撤销。所有剩余变更恢复后才将会话标记为 undone。
 
+### 撤销后的重做
+
+```bash
+agentguard redo --dry-run                # 预览本次会重做的路径
+agentguard redo                          # 恢复最近撤销会话的已撤销结果
+agentguard redo --path src/main.py        # 仅重做指定文件，可重复 --path
+agentguard redo --session <完整会话ID>    # 显式选择保留会话
+```
+
+redo 从会话执行后快照恢复文件，不重新运行 Agent、验证命令或 Shell。默认选择最近发生撤销且仍有已撤销路径的会话，连续完整 undo 后可按相反顺序 redo；无撤销时间信息的旧会话按会话 ID 从早到晚作为后备。指定 --session 可选择其他会话，但仍需通过冲突检查，不提供强制覆盖。
+
+完整 redo 恢复该会话**全部尚未重做的已撤销路径**，不只代表最近一次 --path 操作；--path 精确选择文件或符号链接，目录结构变化和缺失父目录需完整 redo。多路径一起预检，任一冲突会拒绝整次操作。其他文件的人工编辑不会被改动；若它们影响目录移除或父目录结构，则仍会阻止重做。preview 不改文件及恢复状态，仍需取得工作区锁。
+
+部分 redo 后历史继续显示 partially-undone，剩余已撤销路径可继续 redo，也可 undo 撤销已重新应用的部分。history --json 的 redo_paths 列出可重做路径，redo_count 记录成功重做次数；status 随当前恢复状态更新，diff 保留原始执行差异。重做不会改写原命令退出码、验证结果或自动回滚事件，CLI 成功退出仅表示文件重新应用成功。
+
+自动回滚的结果也可重做，以便检查失败产物。固定状态、快照排除范围、权限和符号链接继续沿用原会话。快照损坏、不完整会话或后续编辑导致的冲突会拒绝操作；重做与撤销一样不是文件系统原子事务。历史裁剪后无法重做该会话，需长期保留时先 pin。原始运行审计日志不会因重做而新增命令执行记录。
+
 ### 修改后自动验证
 
 ```bash
@@ -305,7 +322,7 @@ agentguard audit --session <完整会话ID>
 
 ### 异常中断后的工作区锁恢复
 
-运行、撤销、固定会话、裁剪和 gc 使用 macOS/Linux 的 [fcntl.flock](https://docs.python.org/3/library/fcntl.html#fcntl.flock) 非阻塞排他锁。`.agentguard/workspace.lock` 是持久的内核锁载体，操作结束后继续保留；**不要删除它来解锁**，否则可能产生不同锁文件 inode 并失去互斥。`.agentguard/session.lock` 是当前操作的版本化标记，正常结束时移除。
+运行、撤销、重做、固定会话、裁剪和 gc 使用 macOS/Linux 的 [fcntl.flock](https://docs.python.org/3/library/fcntl.html#fcntl.flock) 非阻塞排他锁。`.agentguard/workspace.lock` 是持久的内核锁载体，操作结束后继续保留；**不要删除它来解锁**，否则可能产生不同锁文件 inode 并失去互斥。`.agentguard/session.lock` 是当前操作的版本化标记，正常结束时移除。
 
 包装器把锁描述符传给直接启动的 Agent 和验证进程，因此包装器被 SIGKILL 后，这些进程仍在运行并保留描述符时，其他修改工作区历史的操作仍会被拒绝。它们退出且所有锁描述符释放后，下一次操作拿到内核排他锁，才会自动替换可识别的遗留 session.lock。正常异常退出也会释放持有的描述符。
 
@@ -523,6 +540,7 @@ max_history = 30
 - [x] 会话级完整快照与带冲突检查的 `agentguard undo` 回滚
 - [x] 回滚预览、快照结构校验和只读目录恢复
 - [x] 按文件/符号链接撤销、部分恢复状态与剩余变更跟踪
+- [x] 快照重做、按文件重做、预览与混合恢复状态冲突检查
 - [x] 可选失败自动恢复，保留退出码与失败差异审计
 - [x] 顺序验证命令、失败停止及验证失败自动恢复
 - [x] 命名运行 Profile、显式命令行覆盖与能力查询

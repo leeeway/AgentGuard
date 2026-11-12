@@ -60,6 +60,10 @@ def record(value):
         raise ValueError('Invalid snapshot identifier')
     if value.get('profile') is not None and not valid_name(value['profile']):
         raise ValueError('Invalid run profile name')
+    if 'last_undo_ns' in value and (type(value['last_undo_ns']) is not int or value['last_undo_ns'] <= 0):
+        raise ValueError('Invalid undo timestamp')
+    if 'redo_count' in value and (type(value['redo_count']) is not int or value['redo_count'] < 0):
+        raise ValueError('Invalid session redo count')
     if 'pinned' in value and type(value['pinned']) is not bool:
         raise ValueError('Invalid session pin state')
     if 'file_protection' in value and type(value['file_protection']) is not bool:

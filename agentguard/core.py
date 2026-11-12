@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import shlex
 import stat
+import time
 import uuid
 
 from . import validation, objects, inventory, privacy, profiles
@@ -179,18 +180,76 @@ def restore(root, record, dry_run=False, paths=()):
     before, after = record['before'], record['after']
     current = capture(root, {'snapshots': {'exclude': record.get('snapshot_excludes', [])}})
     original_changes = changes(before, after)
-    restored = set(record.get('restored_paths', []))
+    restored = set(undone_paths(record))
+    expected = _expected_state(record)
     remaining = [key for key in original_changes if key not in restored]
+    touched = _select_paths(before, expected, remaining, paths, current, 'undo')
+    _apply_restore(root, before, expected, touched, current, dry_run, 'Undo')
+    if dry_run:
+        return touched
+    record['restored_paths'] = sorted(restored | set(touched))
+    record['undone'] = len(record['restored_paths']) == len(original_changes)
+    record['last_undo_ns'] = time.time_ns()
+    save(root, record)
+
+
+def undone_paths(record):
+    if 'after' not in record:
+        return []
+    if record.get('undone'):
+        # Legacy undone records did not enumerate restored_paths.
+        return changes(record['before'], record['after'])
+    return sorted(record.get('restored_paths', []))
+
+
+def reapply(root, record, dry_run=False, paths=()):
+    validation.record(record)
+    if 'after' not in record:
+        raise ValueError('Session is incomplete; no final snapshot is available for redo.')
+    available = undone_paths(record)
+    if not available:
+        raise ValueError('Session has no undone paths to redo.')
+    expected = _expected_state(record)
+    current = capture(root, {'snapshots': {'exclude': record.get('snapshot_excludes', [])}})
+    target = record['after']
+    touched = _select_paths(target, expected, available, paths, current, 'redo')
+    _apply_restore(root, target, expected, touched, current, dry_run, 'Redo')
+    if not dry_run:
+        record['restored_paths'] = sorted(set(available) - set(touched))
+        record['undone'] = False
+        record['redo_count'] = record.get('redo_count', 0) + 1
+        save(root, record)
+    return touched
+
+
+def _expected_state(record):
+    # Restored paths use before; untouched/reapplied paths use after. This also
+    # handles parents that were restored while individual children were redone.
+    expected = dict(record['after'])
+    for key in undone_paths(record):
+        entry = record['before'].get(key)
+        if entry is None:
+            expected.pop(key, None)
+        else:
+            expected[key] = entry
+    return expected
+
+
+def _select_paths(before, after, remaining, paths, current, operation):
     touched = sorted(set(paths)) if paths else remaining
     for key in touched:
         if key not in remaining:
-            raise ValueError('Path is unchanged or already restored: ' + json.dumps(key))
+            raise ValueError(('Path is unchanged or already restored: ' if operation == 'undo' else 'Path has not been undone: ') + json.dumps(key))
         if paths:
             if any(entry.get(key, {}).get('kind') == 'dir' for entry in (before, after)):
-                raise ValueError('Selective undo supports files and links; use full undo for directory changes.')
+                raise ValueError(f'Selective {operation} supports files and links; use full {operation} for directory changes.')
             for parent in Path(key).parents:
                 if str(parent) != '.' and current.get(parent.as_posix(), {}).get('kind') != 'dir':
-                    raise ValueError('Selective undo requires existing parent directories; use full undo.')
+                    raise ValueError(f'Selective {operation} requires existing parent directories; use full {operation}.')
+    return touched
+
+
+def _apply_restore(root, before, after, touched, current, dry_run, operation):
     conflicts = [k for k in touched if current.get(k) != after.get(k)]
     for key in touched:
         for parent in Path(key).parents:
@@ -199,7 +258,7 @@ def restore(root, record, dry_run=False, paths=()):
             ancestor = parent.as_posix()
             if current.get(ancestor) != after.get(ancestor):
                 conflicts.append(ancestor)
-    # A new file inside an agent-created directory must never be removed by undo.
+    # Never remove a directory containing unselected or unrecorded content.
     for key in touched:
         if after.get(key, {}).get('kind') == 'dir' and before.get(key, {}).get('kind') != 'dir':
             conflicts.extend(k for k in current if k.startswith(key + '/') and k not in touched)
@@ -210,7 +269,7 @@ def restore(root, record, dry_run=False, paths=()):
                     if name not in touched:
                         conflicts.append(name)
     if conflicts:
-        raise ValueError('Undo refused: files changed after the session: ' + ', '.join(sorted(set(conflicts))))
+        raise ValueError(operation + ' refused: files changed since the recorded state: ' + ', '.join(sorted(set(conflicts))))
     if dry_run:
         return touched
     # Make affected existing directories traversable until restoration finishes.
@@ -242,6 +301,3 @@ def restore(root, record, dry_run=False, paths=()):
     for key in sorted(touched, key=lambda k: k.count('/'), reverse=True):
         if before.get(key, {}).get('kind') == 'dir':
             (root / key).chmod(before[key]['mode'])
-    record['restored_paths'] = sorted(restored | set(touched))
-    record['undone'] = len(record['restored_paths']) == len(original_changes)
-    save(root, record)

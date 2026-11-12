@@ -19,6 +19,8 @@ def summary(record):
         'pinned': record.get('pinned', False),
         'retention_reasons': retention.reasons(record),
         'state': state,
+        'redo_paths': core.undone_paths(record),
+        'redo_count': record.get('redo_count', 0),
         'restored_paths': record.get('restored_paths', []),
         'remaining_paths': (0 if record.get('undone') else len(remaining)) if complete else None,
         'started_at': record.get('started_at'),
