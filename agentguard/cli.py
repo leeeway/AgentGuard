@@ -160,6 +160,12 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
             core.save(root, record)
             click.echo(f'Command exited {code}; session changes restored.', err=True)
         retention.prune(root, settings.get('snapshots', {}).get('max_history', 30))
+        archived = settings.get('audit', {}).get('max_archived_sessions')
+        if archived is not None:
+            try:
+                audit.prune(root, archived)
+            except (OSError, ValueError) as exc:
+                raise click.ClickException(f'Command exited {code}; audit retention failed: {exc}') from exc
     raise click.exceptions.Exit(code if code >= 0 else 128 - code)
 
 
@@ -410,6 +416,28 @@ def prune_command(dry_run, as_json):
         for session in report['candidates']:
             click.echo('  ' + session)
         click.echo('Run gc separately to reclaim unreferenced content objects.')
+
+
+@main.command('audit-prune')
+@click.option('--keep', 'keep_archived', type=click.IntRange(min=0), help='Keep this many newest archived logs; config or 30 by default.')
+@click.option('--dry-run', is_flag=True, help='Preview old archived logs without deleting them.')
+@click.option('--json', 'as_json', is_flag=True, help='Emit candidate bytes and retained session logs as JSON.')
+def audit_prune_command(keep_archived, dry_run, as_json):
+    """Trim archived audit logs, preserving every retained snapshot's log."""
+    root = Path.cwd()
+    settings = core.config(root)
+    if keep_archived is None:
+        keep_archived = settings.get('audit', {}).get('max_archived_sessions', 30)
+    with workspace_lock(core.store(root)):
+        report = audit.prune(root, keep_archived, dry_run)
+    if as_json:
+        click.echo(json.dumps(report))
+    else:
+        action = 'Would remove' if dry_run else 'Removed'
+        click.echo(f"{action} {len(report['candidates'])} archived audit logs ({report['candidate_bytes']} bytes).")
+        click.echo(f"Retained {len(report['snapshot_linked'])} snapshot-linked and {len(report['retained_archived'])} archived logs.")
+        for item in report['candidates']:
+            click.echo('  ' + item['session'])
 
 
 if __name__ == '__main__':

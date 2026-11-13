@@ -49,7 +49,7 @@ def config(root):
         raise ValueError('Run agentguard init in this directory first.')
     with path.open('rb') as stream:
         data = tomllib.load(stream)
-    for section in ('safety', 'snapshots', 'privacy'):
+    for section in ('safety', 'snapshots', 'privacy', 'audit'):
         if not isinstance(data.get(section, {}), dict):
             raise ValueError(f'{section} must be a TOML table')
     safety = data.get('safety', {})
@@ -70,6 +70,9 @@ def config(root):
         limit = data.get('snapshots', {}).get(key)
         if limit is not None and (type(limit) is not int or limit < 1):
             raise ValueError(f'snapshots.{key} must be a positive integer')
+    archived = data.get('audit', {}).get('max_archived_sessions')
+    if archived is not None and (type(archived) is not int or archived < 0):
+        raise ValueError('audit.max_archived_sessions must be a nonnegative integer')
     validation.exclusions(data.get('snapshots', {}).get('exclude', []))
     privacy.validate(data.get('privacy', {}).get('protected_files', privacy.DEFAULT_PROTECTED))
     profiles.validate(data.get('profiles', {}))
