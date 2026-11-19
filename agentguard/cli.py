@@ -170,6 +170,36 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
     raise click.exceptions.Exit(code if code >= 0 else 128 - code)
 
 
+@main.command('recover')
+@click.option('--session', help='Require the latest non-undone session to match this exact ID.')
+@click.option('--dry-run', is_flag=True, help='Preview changed paths without saving a final snapshot.')
+def recover_command(session, dry_run):
+    """Save the current workspace as the final snapshot of an interrupted session."""
+    root = Path.cwd()
+    settings = core.config(root)
+    with workspace_lock(core.store(root)):
+        history = core.records(root, contents=False)
+        latest = next((record for record in reversed(history) if not record.get('undone')), None)
+        if latest is None or 'after' in latest:
+            raise click.ClickException('The latest non-undone session must be incomplete to recover it.')
+        if session is not None and session != latest['id']:
+            raise click.ClickException('The requested session is not the latest non-undone session.')
+
+        record = objects.unpack(root, latest)
+        # Recovery captures the same scope as the original run, with today's budget.
+        limits = dict(settings.get('snapshots', {}), exclude=record.get('snapshot_excludes', []))
+        record['after'] = core.capture(root, {'snapshots': limits})
+        if dry_run:
+            click.echo(f"Recovery preview for session {record['id']}")
+            click.echo(inspection.diff(record) or 'No changes recorded.\n', nl=False)
+            return
+
+        record['recovered_at'] = datetime.now(timezone.utc).isoformat()
+        core.save(root, record)
+    click.echo(f"Saved the current workspace as the final snapshot for session {record['id']}.")
+    click.echo('Use agentguard undo --dry-run to review the rollback.')
+
+
 @main.command()
 @click.option('--all', 'undo_all', is_flag=True, help='Restore the latest session (currently one snapshot per session).')
 @click.option('--dry-run', is_flag=True, help='Check conflicts and preview paths without changing files.')
@@ -185,6 +215,8 @@ def undo(undo_all, dry_run, paths):
         if not pending:
             click.echo('No sessions to undo.')
             return
+        if 'after' not in pending[-1]:
+            raise click.ClickException('The latest session is incomplete. Run agentguard recover --dry-run to inspect it.')
         touched = core.restore(root, pending[-1], dry_run=dry_run, paths=paths)
         if dry_run:
             for path in touched:
@@ -259,7 +291,8 @@ def history_command(as_json, limit):
     for row in rows:
         code = row['exit_code'] if row['exit_code'] is not None else 'unknown'
         changed = row['changed_paths'] if row['changed_paths'] is not None else 'unknown'
-        click.echo(f"{row['id']}  {row['state']}  exit={code}  changed={changed}  recovery={row['automatic_rollback']}  verification={row['verification']['state']}  profile={row['profile'] or '-'}  pinned={row['pinned']}")
+        recovered = '  recovered' if row['recovered_at'] else ''
+        click.echo(f"{row['id']}  {row['state']}  exit={code}  changed={changed}  recovery={row['automatic_rollback']}  verification={row['verification']['state']}  profile={row['profile'] or '-'}  pinned={row['pinned']}{recovered}")
 
 
 @main.command('diff')

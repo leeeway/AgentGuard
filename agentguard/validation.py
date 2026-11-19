@@ -104,6 +104,8 @@ def record(value, *, object_refs=False):
         raise ValueError('Invalid snapshot hooks')
     if value.get('automatic_rollback', 'disabled') not in ('disabled', 'pending', 'not-needed', 'restored', 'failed', 'not-started'):
         raise ValueError('Invalid automatic rollback state')
-    for field in ('started_at', 'finished_at'):
+    if 'recovered_at' in value and 'after' not in value:
+        raise ValueError('Recovered sessions require a final snapshot')
+    for field in ('started_at', 'finished_at', 'recovered_at'):
         if field in value and not isinstance(value[field], str):
             raise ValueError('Invalid snapshot timestamp')

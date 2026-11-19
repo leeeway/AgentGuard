@@ -4,8 +4,9 @@ import sys
 import unittest
 
 from click.testing import CliRunner
-from agentguard import core, validation
+from agentguard import core, objects, validation
 from agentguard.cli import main
+from agentguard.locking import workspace_lock
 
 
 class SnapshotIntegrity(unittest.TestCase):
@@ -69,6 +70,39 @@ class SnapshotIntegrity(unittest.TestCase):
         result = self.runner.invoke(main, ['run', '--', sys.executable, '-c', 'pass'])
         self.assertNotEqual(result.exit_code, 0)
         self.assertEqual(list(Path('outside').iterdir()), [])
+
+    def test_recover_respects_session_order_and_explicit_id(self):
+        root = Path.cwd()
+        older = '0' * 20 + '-' + 'a' * 32
+        core.save(root, {'id': older, 'before': {}})
+        newer = self.session('pass')
+        result = self.runner.invoke(main, ['recover', '--session', older])
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertNotIn('after', core.records(root)[0])
+        self.assertEqual(self.runner.invoke(main, ['undo']).exit_code, 0)
+        result = self.runner.invoke(main, ['recover', '--session', newer['id']])
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn('not the latest non-undone session', result.output)
+        result = self.runner.invoke(main, ['recover', '--session', older])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(core.records(root)[0]['after'], {})
+
+    def test_recover_refuses_active_lock_and_corrupt_baseline(self):
+        root = Path.cwd()
+        Path('a').write_text('before')
+        session = '0' * 20 + '-' + 'a' * 32
+        core.save(root, {'id': session, 'before': core.capture(root)})
+        manifest = core.snapshot_directory(root) / (session + '.json')
+        before = manifest.read_bytes()
+        with workspace_lock(core.store(root)):
+            result = self.runner.invoke(main, ['recover'])
+            self.assertIn('active', result.output)
+        (objects.directory(root) / objects.digest(b'before')).write_text('corrupted')
+        result = self.runner.invoke(main, ['recover'])
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn('checksum mismatch', result.output)
+        self.assertEqual(manifest.read_bytes(), before)
+        self.assertEqual(Path('a').read_text(), 'before')
 
     def test_file_directory_type_transitions(self):
         Path('file').write_text('original')

@@ -25,6 +25,7 @@ def summary(record):
         'remaining_paths': (0 if record.get('undone') else len(remaining)) if complete else None,
         'started_at': record.get('started_at'),
         'finished_at': record.get('finished_at'),
+        'recovered_at': record.get('recovered_at'),
         'exit_code': record.get('exit_code'),
         'command_exit_code': record.get('command_exit_code', record.get('exit_code')),
         'verification': record.get('verification', {'requested': 0, 'exit_codes': [], 'state': 'disabled'}),

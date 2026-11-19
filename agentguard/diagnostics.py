@@ -59,8 +59,9 @@ def inspect(root):
             continue
         add('snapshot-integrity', 'ok', 'Manifest and referenced contents validated.', session=record['id'])
         if 'after' not in record:
-            add('incomplete-session', 'warning', 'This session has no final snapshot.', 'Preserve its before snapshot; ordinary undo and automatic recovery cannot safely restore this session.', record['id'])
-        if record.get('automatic_rollback') in ('pending', 'failed'):
+            add('incomplete-session', 'warning', 'This session has no final snapshot.',
+                'Once the command has stopped, use recover --dry-run if this is the latest non-undone session.', record['id'])
+        if not record.get('undone') and record.get('automatic_rollback') in ('pending', 'failed'):
             add('unfinished-recovery', 'warning', 'Automatic recovery is not confirmed complete.', 'Inspect the workspace and session diff; if complete, use undo --dry-run before attempting recovery.', record['id'])
     if not paths:
         add('snapshot-inventory', 'ok', 'No recorded sessions.')

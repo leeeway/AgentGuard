@@ -57,14 +57,57 @@ class SnapshotBudget(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'budget exceeded'):
             core.capture(Path.cwd(), core.config(Path.cwd()))
 
-    def test_post_run_limit_leaves_incomplete_snapshot(self):
-        self.limits('max_total_bytes = 4')
-        result = self.runner.invoke(main, ['run', '--rollback-on-failure', '--', sys.executable, '-c', "from pathlib import Path; Path('a').write_text('12345'); raise SystemExit(7)"])
+    def test_recover_incomplete_snapshot_after_post_run_limit(self):
+        self.limits('max_total_bytes = 4\nexclude = ["cache"]')
+        Path('a').write_text('old')
+        source = "from pathlib import Path; Path('a').write_text('12345'); Path('cache').write_text('unsnapshotted'); raise SystemExit(7)"
+        result = self.runner.invoke(main, ['run', '--rollback-on-failure', '--', sys.executable, '-c', source])
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn('budget exceeded', result.output)
-        self.assertNotIn('after', core.records(Path.cwd())[0])
+        record = core.records(Path.cwd())[0]
+        self.assertNotIn('after', record)
+        manifest = Path('.agentguard/snapshots') / (record['id'] + '.json')
+        original = manifest.read_bytes()
+        blocked = self.runner.invoke(main, ['undo'])
+        self.assertNotEqual(blocked.exit_code, 0)
+        self.assertIn('recover --dry-run', blocked.output)
+        blocked = self.runner.invoke(main, ['recover'])
+        self.assertNotEqual(blocked.exit_code, 0)
+        self.assertIn('budget exceeded', blocked.output)
+        self.assertEqual(manifest.read_bytes(), original)
+
+        self.limits('max_total_bytes = 5\nexclude = ["a"]')
+        preview = self.runner.invoke(main, ['recover', '--dry-run'])
+        self.assertEqual(preview.exit_code, 0, preview.output)
+        self.assertIn('modified: "a"', preview.output)
+        self.assertNotIn('cache', preview.output)
+        self.assertNotIn('12345', preview.output)
+        self.assertEqual(manifest.read_bytes(), original)
+
+        result = self.runner.invoke(main, ['recover', '--session', record['id']])
+        self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(Path('a').read_text(), '12345')
-        self.assertNotEqual(self.runner.invoke(main, ['undo']).exit_code, 0)
+        history = json.loads(self.runner.invoke(main, ['history', '--json']).output)[0]
+        self.assertEqual(history['id'], record['id'])
+        self.assertEqual(history['state'], 'complete')
+        self.assertTrue(history['recovered_at'])
+        self.assertIsNone(history['finished_at'])
+        self.assertIsNone(history['exit_code'])
+        self.assertEqual(history['automatic_rollback'], 'pending')
+
+        Path('a').write_text('edit after recovery')
+        blocked = self.runner.invoke(main, ['undo'])
+        self.assertIn('Undo refused', blocked.output)
+        self.assertEqual(Path('a').read_text(), 'edit after recovery')
+        Path('a').write_text('12345')
+        result = self.runner.invoke(main, ['undo'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(Path('a').read_text(), 'old')
+        self.assertEqual(Path('cache').read_text(), 'unsnapshotted')
+        report = self.runner.invoke(main, ['doctor', '--json'])
+        codes = {check['code'] for check in json.loads(report.output)['checks']}
+        self.assertNotIn('incomplete-session', codes)
+        self.assertNotIn('unfinished-recovery', codes)
 
     def test_invalid_limits(self):
         for value in ('0', '-1', 'true', '"100"'):
