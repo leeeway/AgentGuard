@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from itertools import islice
 import json
 import math
 import shlex
@@ -225,7 +226,7 @@ def status():
     """Show changes recorded in the latest session."""
     root = Path.cwd()
     core.config(root)
-    history = core.records(root)
+    history = core.records(root, contents=False)
     click.echo(f'Sessions: {len(history)}')
     click.echo('Protection: launch-command checks; optional Python/Node command hooks; file access checks via --protect-files.')
     pending = [r for r in history if not r.get('undone')]
@@ -248,7 +249,8 @@ def history_command(as_json, limit):
     """List recorded sessions, newest first, including undone sessions."""
     root = Path.cwd()
     core.config(root)
-    rows = [inspection.summary(r) for r in reversed(core.records(root))][:limit]
+    history = core.records(root, contents=False)
+    rows = [inspection.summary(r) for r in islice(reversed(history), limit)]
     if as_json:
         click.echo(json.dumps(rows, ensure_ascii=False))
         return
@@ -268,8 +270,8 @@ def diff_command(session, contents, paths):
     """Inspect recorded before/after changes without reading current workspace files."""
     root = Path.cwd()
     core.config(root)
-    record = inspection.select(core.records(root), session)
-    output = inspection.diff(record, contents, paths)
+    record = inspection.select(core.records(root, contents=False), session)
+    output = inspection.diff(record, contents, paths, root=root)
     click.echo(output or 'No changes recorded.\n', nl=False)
 
 
@@ -346,7 +348,7 @@ def audit_command(session, as_json, limit):
     root = Path.cwd()
     core.config(root)
     if session is None:
-        session = inspection.select(core.records(root))['id']
+        session = inspection.select(core.records(root, contents=False))['id']
     rows = audit.read(root, session, limit)
     if as_json:
         click.echo(json.dumps(rows, ensure_ascii=True))

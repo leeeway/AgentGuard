@@ -21,13 +21,17 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def read(root, name):
+def object_path(folder, name):
     if not isinstance(name, str) or not re.fullmatch(r'[0-9a-f]{64}', name):
         raise ValueError('Invalid snapshot object identifier')
-    path = directory(root) / name
+    path = folder / name
     if path.is_symlink() or not path.is_file():
         raise ValueError('Missing or unsafe snapshot object: ' + name)
-    data = path.read_bytes()
+    return path
+
+
+def read(root, name):
+    data = object_path(directory(root), name).read_bytes()
     if digest(data) != name:
         raise ValueError('Snapshot object checksum mismatch: ' + name)
     return data
@@ -63,12 +67,17 @@ def pack(root, record):
     return result
 
 
-def unpack(root, record):
+def format_version(record):
     if not isinstance(record, dict):
         raise ValueError('Snapshot record must be an object')
     version = record.get('format_version', 1)
     if type(version) is not int or version not in (1, 2):
         raise ValueError('Unsupported snapshot format version')
+    return version
+
+
+def unpack(root, record):
+    version = format_version(record)
     result = copy.deepcopy(record)
     if version == 2:
         for field in ('before', 'after'):
@@ -83,11 +92,37 @@ def unpack(root, record):
     return result
 
 
+def check_references(root, manifests, *, verify=False):
+    """Check each distinct object once, streaming bytes when verifying hashes."""
+    names = {
+        entry['object']
+        for record in manifests if format_version(record) == 2
+        for field in ('before', 'after')
+        for entry in record.get(field, {}).values()
+        if entry['kind'] == 'file'
+    }
+    if not names:
+        return names
+    folder = directory(root)
+    for name in sorted(names):
+        path = object_path(folder, name)
+        if verify:
+            checksum = hashlib.sha256()
+            with path.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                    checksum.update(chunk)
+            if checksum.hexdigest() != name:
+                raise ValueError('Snapshot object checksum mismatch: ' + name)
+    return names
+
+
 def collect(root, dry_run=True):
     from .core import records
-    # Load and validate every retained record before deleting anything.
-    referenced = set()
-    for record in records(root):
+    history = records(root, contents=False)
+    referenced = check_references(root, history, verify=True)
+    for record in history:
+        if format_version(record) != 1:
+            continue
         for field in ('before', 'after'):
             for entry in record.get(field, {}).values():
                 if entry['kind'] == 'file':

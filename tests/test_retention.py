@@ -120,6 +120,24 @@ class SessionRetention(unittest.TestCase):
         self.assertIn('checksum mismatch', result.output)
         self.assertEqual(set(Path('.agentguard/snapshots').iterdir()), paths)
 
+    def test_prune_verifies_shared_content_once_before_deleting(self):
+        previous = self.record(1)
+        shared = previous['after']['file']
+        self.record(2, before={'file': shared.copy()}, after={'a': shared.copy(), 'b': shared.copy()})
+        original_open = Path.open
+        checked = []
+
+        def track_reads(path, *args, **kwargs):
+            if path.parent.name == 'objects':
+                checked.append(path.name)
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, 'open', track_reads):
+            result = self.runner.invoke(main, ['prune'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(checked, [objects.digest(b'content1')])
+        self.assertNotIn(previous['id'], self.ids())
+
     def test_mutations_and_preview_respect_live_workspace_lock(self):
         self.record(1)
         with workspace_lock(Path('.agentguard')):

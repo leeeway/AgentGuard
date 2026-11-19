@@ -17,10 +17,10 @@ def reasons(record):
 
 def prune(root, maximum, dry_run=False):
     from .core import records, snapshot_directory
+    from .objects import check_references
     if type(maximum) is not int or maximum < 1:
         raise ValueError('max_history must be a positive integer')
-    # Validate every retained manifest and content object before deleting any.
-    history = records(root)
+    history = records(root, contents=False)
     protected = []
     regular = []
     for record in history:
@@ -30,7 +30,9 @@ def prune(root, maximum, dry_run=False):
         else:
             regular.append(record['id'])
     candidates = regular[:-maximum]
-    if not dry_run:
+    if candidates and not dry_run:
+        # Check all referenced contents before removing any recovery data.
+        check_references(root, history, verify=True)
         directory = snapshot_directory(root)
         for session in candidates:
             (directory / (session + '.json')).unlink()

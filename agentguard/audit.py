@@ -71,10 +71,12 @@ def prune(root, keep_archived=30, dry_run=False):
     Caller must hold the workspace lock. Log payloads are never read here.
     """
     from .core import records
+    from .objects import check_references
     if type(keep_archived) is not int or keep_archived < 0:
         raise ValueError('Audit archive retention must be a nonnegative integer')
     # Invalid snapshots must not turn linked logs into deletion candidates.
-    referenced = {record['id'] for record in records(root)}
+    history = records(root, contents=False)
+    referenced = {record['id'] for record in history}
     folder = directory(root)
     linked, archived = [], []
     ignored = 0
@@ -90,7 +92,8 @@ def prune(root, keep_archived=30, dry_run=False):
             (linked if path.stem in referenced else archived).append(item)
     candidates = archived[:-keep_archived] if keep_archived else archived
     retained = archived[-keep_archived:] if keep_archived else []
-    if not dry_run:
+    if candidates and not dry_run:
+        check_references(root, history, verify=True)
         for item in candidates:
             (folder / (item['session'] + '.jsonl')).unlink()
     return {'keep_archived': keep_archived, 'dry_run': dry_run,

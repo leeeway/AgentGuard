@@ -2,10 +2,11 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 from click.testing import CliRunner
 from agentguard.cli import main
-from agentguard import core
+from agentguard import core, objects
 
 
 class Inspection(unittest.TestCase):
@@ -55,6 +56,43 @@ class Inspection(unittest.TestCase):
         self.assertNotEqual(self.runner.invoke(main, ['diff', '--session', 'missing']).exit_code, 0)
         self.assertNotEqual(self.runner.invoke(main, ['diff', '--path', 'missing']).exit_code, 0)
         self.assertEqual(len(json.loads(self.runner.invoke(main, ['history', '--json', '--limit', '1']).output)), 1)
+
+    def test_summary_commands_and_prune_previews_never_open_content_objects(self):
+        self.run_script("from pathlib import Path; Path('a').write_text('recorded')")
+        original_open = Path.open
+
+        def open_metadata_only(path, *args, **kwargs):
+            if path.parent.name == 'objects':
+                raise AssertionError('Unexpected content read')
+            return original_open(path, *args, **kwargs)
+
+        commands = [
+            ['history', '--json'], ['status'], ['diff'], ['audit', '--json'],
+            ['prune', '--dry-run'], ['audit-prune', '--dry-run'],
+        ]
+        with patch.object(Path, 'open', open_metadata_only):
+            for command in commands:
+                with self.subTest(command=command):
+                    result = self.runner.invoke(main, command)
+                    self.assertEqual(result.exit_code, 0, result.output)
+
+    def test_content_diff_reads_only_the_selected_paths(self):
+        self.run_script("from pathlib import Path; Path('a').write_text('old'); Path('b').write_text('older history')")
+        self.run_script("from pathlib import Path; Path('a').write_text('new'); Path('b').write_text('unselected')")
+        with patch.object(objects, 'read', wraps=objects.read) as read:
+            result = self.runner.invoke(main, ['diff', '--contents', '--path', 'a'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn('+new', result.output)
+        self.assertEqual([call.args[1] for call in read.call_args_list],
+                         [objects.digest(b'old'), objects.digest(b'new')])
+
+    def test_content_diff_reports_checksum_failure_on_selected_path(self):
+        self.run_script("from pathlib import Path; Path('a').write_text('recorded')")
+        (Path('.agentguard/objects') / objects.digest(b'recorded')).write_bytes(b'changed')
+        self.assertEqual(self.runner.invoke(main, ['diff']).output, 'added: "a"\n')
+        result = self.runner.invoke(main, ['diff', '--contents'])
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn('checksum mismatch', result.output)
 
     def test_binary_and_terminal_controls(self):
         self.run_script("from pathlib import Path; Path('binary').write_bytes(b'\\x00abc'); Path('text').write_text('\\x1b[31mred')")

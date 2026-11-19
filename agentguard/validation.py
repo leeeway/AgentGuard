@@ -8,7 +8,7 @@ import math
 from .profiles import valid_name
 
 
-def manifest(value):
+def manifest(value, *, object_refs=False):
     if not isinstance(value, dict):
         raise ValueError('Snapshot manifest must be an object')
     for path, entry in value.items():
@@ -25,7 +25,11 @@ def manifest(value):
             mode = entry.get('mode')
             if type(mode) is not int or not 0 <= mode <= 0o7777:
                 raise ValueError('Invalid snapshot file mode')
-        if entry['kind'] == 'file':
+        if entry['kind'] == 'file' and object_refs:
+            name = entry.get('object')
+            if 'data' in entry or not isinstance(name, str) or not re.fullmatch(r'[0-9a-f]{64}', name):
+                raise ValueError('Version 2 file must reference a valid snapshot object')
+        elif entry['kind'] == 'file':
             try:
                 if not isinstance(entry.get('data'), str):
                     raise ValueError('Missing file content')
@@ -49,13 +53,13 @@ def exclusions(value):
         raise ValueError('Snapshot exclusions must be workspace-relative glob strings without empty, dot or parent components')
 
 
-def record(value):
+def record(value, *, object_refs=False):
     if not isinstance(value, dict):
         raise ValueError('Snapshot record must be an object')
     exclusions(value.get('snapshot_excludes', []))
-    manifest(value.get('before'))
+    manifest(value.get('before'), object_refs=object_refs)
     if 'after' in value:
-        manifest(value['after'])
+        manifest(value['after'], object_refs=object_refs)
     if not isinstance(value.get('id'), str) or not re.fullmatch(r'[0-9]{20}-[0-9a-f]{32}', value['id']):
         raise ValueError('Invalid snapshot identifier')
     if value.get('profile') is not None and not valid_name(value['profile']):

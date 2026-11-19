@@ -155,12 +155,16 @@ def save(root, record):
         temporary.unlink(missing_ok=True)
 
 
-def load_record(root, path):
+def load_record(root, path, *, contents=True):
     if path.is_symlink() or not path.is_file():
         raise ValueError('Snapshot record must be a regular file')
     try:
-        record = objects.unpack(root, json.loads(path.read_text()))
-        validation.record(record)
+        record = json.loads(path.read_text())
+        if contents:
+            record = objects.unpack(root, record)
+            validation.record(record)
+        else:
+            validation.record(record, object_refs=objects.format_version(record) == 2)
         if path.stem != record['id']:
             raise ValueError('Snapshot filename does not match its identifier')
     except ValueError as exc:
@@ -168,8 +172,14 @@ def load_record(root, path):
     return record
 
 
-def records(root):
-    return [load_record(root, path) for path in sorted(snapshot_directory(root).glob('*.json'))]
+def records(root, *, contents=True):
+    history = [
+        load_record(root, path, contents=contents)
+        for path in sorted(snapshot_directory(root).glob('*.json'))
+    ]
+    if not contents:
+        objects.check_references(root, history)
+    return history
 
 
 def changes(before, after):

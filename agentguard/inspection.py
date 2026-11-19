@@ -3,7 +3,7 @@ import base64
 import difflib
 import json
 
-from . import core, retention
+from . import core, objects, retention
 
 
 def summary(record):
@@ -47,7 +47,7 @@ def select(history, session=None):
     return history[-1]
 
 
-def diff(record, contents=False, paths=()):
+def diff(record, contents=False, paths=(), *, root=None):
     if 'after' not in record:
         raise ValueError('Session is incomplete; no final diff is available.')
     before, after = record['before'], record['after']
@@ -75,8 +75,16 @@ def diff(record, contents=False, paths=()):
                 output.append(f'  {version}: {details}\n')
         if any(entry and entry['kind'] != 'file' for entry in (old, new)):
             continue
+        data = []
+        for entry in (old, new):
+            if entry is None:
+                data.append(b'')
+            elif 'data' in entry:
+                data.append(base64.b64decode(entry['data'], validate=True))
+            else:
+                data.append(objects.read(root, entry['object']))
         try:
-            texts = [base64.b64decode(entry['data'], validate=True).decode('utf-8') if entry else '' for entry in (old, new)]
+            texts = [content.decode('utf-8') for content in data]
             if any('\x00' in text for text in texts):
                 raise UnicodeError('binary')
         except UnicodeError:
