@@ -40,18 +40,22 @@ class WorkspaceLocks(unittest.TestCase):
         return int(line)
 
     def cleanup(self, process, child=None):
-        if child is not None:
-            try:
-                os.kill(child, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait(timeout=5)
-        for stream in (process.stdin, process.stdout, process.stderr):
-            stream.close()
+            if child is not None:
+                try:
+                    os.kill(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            # The process group may already be gone once its wrapper is reaped.
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            process.wait(timeout=5)
+        finally:
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
 
     def test_kernel_lock_prevents_overlap_even_if_marker_removed(self):
         with locking.workspace_lock(self.folder) as descriptor:
