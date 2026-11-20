@@ -7,6 +7,8 @@ import math
 
 from .profiles import valid_name
 
+SNAPSHOT_FIELDS = ('before', 'before_verification', 'after')
+
 
 def manifest(value, *, object_refs=False):
     if not isinstance(value, dict):
@@ -28,7 +30,7 @@ def manifest(value, *, object_refs=False):
         if entry['kind'] == 'file' and object_refs:
             name = entry.get('object')
             if 'data' in entry or not isinstance(name, str) or not re.fullmatch(r'[0-9a-f]{64}', name):
-                raise ValueError('Version 2 file must reference a valid snapshot object')
+                raise ValueError('Snapshot file must reference a valid content object')
         elif entry['kind'] == 'file':
             try:
                 if not isinstance(entry.get('data'), str):
@@ -58,8 +60,9 @@ def record(value, *, object_refs=False):
         raise ValueError('Snapshot record must be an object')
     exclusions(value.get('snapshot_excludes', []))
     manifest(value.get('before'), object_refs=object_refs)
-    if 'after' in value:
-        manifest(value['after'], object_refs=object_refs)
+    for field in SNAPSHOT_FIELDS[1:]:
+        if field in value:
+            manifest(value[field], object_refs=object_refs)
     if not isinstance(value.get('id'), str) or not re.fullmatch(r'[0-9]{20}-[0-9a-f]{32}', value['id']):
         raise ValueError('Invalid snapshot identifier')
     if value.get('profile') is not None and not valid_name(value['profile']):

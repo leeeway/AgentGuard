@@ -6,6 +6,8 @@ import os
 import re
 import uuid
 
+from .validation import SNAPSHOT_FIELDS
+
 
 def directory(root):
     from .core import store
@@ -59,8 +61,9 @@ def write(root, data):
 
 def pack(root, record):
     result = copy.deepcopy(record)
-    result['format_version'] = 2
-    for field in ('before', 'after'):
+    # Older collectors would miss content referenced only by the checkpoint.
+    result['format_version'] = 3 if 'before_verification' in record else 2
+    for field in SNAPSHOT_FIELDS:
         for entry in result.get(field, {}).values():
             if entry['kind'] == 'file':
                 entry['object'] = write(root, base64.b64decode(entry.pop('data'), validate=True))
@@ -71,23 +74,25 @@ def format_version(record):
     if not isinstance(record, dict):
         raise ValueError('Snapshot record must be an object')
     version = record.get('format_version', 1)
-    if type(version) is not int or version not in (1, 2):
+    if type(version) is not int or version not in (1, 2, 3):
         raise ValueError('Unsupported snapshot format version')
+    if (version == 3) != ('before_verification' in record):
+        raise ValueError('Snapshot format does not match the verification checkpoint')
     return version
 
 
 def unpack(root, record):
     version = format_version(record)
     result = copy.deepcopy(record)
-    if version == 2:
-        for field in ('before', 'after'):
+    if version >= 2:
+        for field in SNAPSHOT_FIELDS:
             manifest = result.get(field, {})
             if not isinstance(manifest, dict):
                 raise ValueError('Snapshot manifest must be an object')
             for entry in manifest.values():
                 if isinstance(entry, dict) and entry.get('kind') == 'file':
                     if 'data' in entry:
-                        raise ValueError('Version 2 file must reference a snapshot object')
+                        raise ValueError('Snapshot file must reference a content object')
                     entry['data'] = base64.b64encode(read(root, entry.pop('object', None))).decode('ascii')
     return result
 
@@ -96,8 +101,8 @@ def check_references(root, manifests, *, verify=False):
     """Check each distinct object once, streaming bytes when verifying hashes."""
     names = {
         entry['object']
-        for record in manifests if format_version(record) == 2
-        for field in ('before', 'after')
+        for record in manifests if format_version(record) >= 2
+        for field in SNAPSHOT_FIELDS
         for entry in record.get(field, {}).values()
         if entry['kind'] == 'file'
     }
@@ -123,7 +128,7 @@ def collect(root, dry_run=True):
     for record in history:
         if format_version(record) != 1:
             continue
-        for field in ('before', 'after'):
+        for field in SNAPSHOT_FIELDS:
             for entry in record.get(field, {}).values():
                 if entry['kind'] == 'file':
                     referenced.add(digest(base64.b64decode(entry['data'], validate=True)))

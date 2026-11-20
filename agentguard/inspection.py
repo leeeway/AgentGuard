@@ -29,6 +29,7 @@ def summary(record):
         'exit_code': record.get('exit_code'),
         'command_exit_code': record.get('command_exit_code', record.get('exit_code')),
         'verification': record.get('verification', {'requested': 0, 'exit_codes': [], 'state': 'disabled'}),
+        'verification_checkpoint': 'before_verification' in record,
         'hooks': record.get('hooks', []),
         'file_protection': record.get('file_protection', False),
         'snapshot_excludes': record.get('snapshot_excludes', []),
@@ -48,10 +49,16 @@ def select(history, session=None):
     return history[-1]
 
 
-def diff(record, contents=False, paths=(), *, root=None):
-    if 'after' not in record:
+def diff(record, contents=False, paths=(), *, root=None, phase='session'):
+    if phase != 'session' and 'before_verification' not in record:
+        raise ValueError('No verification checkpoint available for this session.')
+    if phase != 'agent' and 'after' not in record:
         raise ValueError('Session is incomplete; no final diff is available.')
-    before, after = record['before'], record['after']
+    if phase == 'verification' and 'recovered_at' in record:
+        raise ValueError('Verification diff is unavailable after recovery. Use the session diff.')
+    start = 'before_verification' if phase == 'verification' else 'before'
+    end = 'before_verification' if phase == 'agent' else 'after'
+    before, after = record[start], record[end]
     changed = core.changes(before, after)
     for path in paths:
         if path not in changed:

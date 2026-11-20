@@ -131,6 +131,19 @@ agentguard run --rollback-on-failure \
 
 `history --json` 增加 `command_exit_code`（主命令退出码）和 `verification`（请求次数、已执行退出码、状态）。状态为 disabled、pending、skipped、passed 或 failed。不保存验证命令参数，验证程序自身的终端输出不做遮蔽。
 
+### 验证前检查点
+
+```bash
+agentguard run --verify-checkpoint --verify 'python -m unittest discover -s tests' -- python agent_worker.py
+agentguard diff --phase agent
+agentguard diff --phase verification
+agentguard diff --phase agent --contents --path src/main.py
+```
+
+`--verify-checkpoint` 需要至少一条来自命令行或 Profile 的验证命令。启用后，主命令成功退出时额外保存一次快照，再运行验证。`--phase agent` 比较会话开始与检查点，`--phase verification` 比较检查点与会话结束。默认 `diff` 和撤销、重做仍以整个会话为单位。自动回滚后仍可查看两段差异。
+
+主命令失败时跳过检查点和验证。保存检查点失败时，验证不会启动，会话保留起始快照供 `recover` 使用。会话中断后，已保存的检查点仍可用于查看 Agent 阶段。补录的结束快照可能包含后续工作区编辑，补录后只提供 Agent 阶段差异和完整会话差异。`history --json` 的 `verification_checkpoint` 字段标记是否有检查点。
+
 ### 验证超时控制
 
 ```bash
@@ -319,7 +332,7 @@ agentguard gc             # 删除无引用内容对象
 
 `snapshots.max_history` 裁剪会话清单后，内容对象保留至显式执行 `gc`。垃圾回收与运行、撤销共用工作区锁，先读取并校验所有保留会话，再删除不被引用的对象。已撤销会话仍可用于差异审计，因此它们引用的内容会保留。存在损坏清单、丢失对象或哈希不匹配时停止清理，不自动修复或丢弃历史。
 
-新格式为 version 2，内容对象读入时验证 SHA-256；这是损坏检测，不是防篡改签名。旧版 AgentGuard 无法读取新格式，请勿降级后操作新会话。旧格式不会批量迁移；再次保存旧会话（例如撤销）时会转换为新格式。对象未加密，仍需保护 `.agentguard/` 的访问权限。
+普通会话使用 version 2，含验证前检查点的会话使用 version 3。两种格式读取内容对象时均校验 SHA-256 以检测损坏。请使用支持对应格式的 AgentGuard 读取会话和回收对象。旧格式不会批量迁移，再次保存旧会话（例如撤销）时会转换格式。请保护 `.agentguard/` 的访问权限，内容对象以明文保存。
 
 ### 会话决策审计
 
@@ -580,6 +593,7 @@ max_history = 30
 - [x] 快照重做、按文件重做、预览与混合恢复状态冲突检查
 - [x] 可选失败自动恢复，保留退出码与失败差异审计
 - [x] 顺序验证命令、失败停止及验证失败自动恢复
+- [x] 验证前检查点与 Agent、验证阶段的差异查询
 - [x] 命名运行 Profile、显式命令行覆盖与能力查询
 - [x] 验证超时、进程组清理和超时审计
 - [x] 会话历史、JSON 元数据与按路径查看文本差异

@@ -164,7 +164,7 @@ def load_record(root, path, *, contents=True):
             record = objects.unpack(root, record)
             validation.record(record)
         else:
-            validation.record(record, object_refs=objects.format_version(record) == 2)
+            validation.record(record, object_refs=objects.format_version(record) >= 2)
         if path.stem != record['id']:
             raise ValueError('Snapshot filename does not match its identifier')
     except ValueError as exc:

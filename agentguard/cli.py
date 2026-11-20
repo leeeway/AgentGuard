@@ -43,9 +43,11 @@ def init():
 @click.option('--rollback-on-failure/--no-rollback-on-failure', default=None, help='Restore this session when the command exits nonzero.')
 @click.option('--no-verify', is_flag=True, help='Disable profile verification and its timeout for this run.')
 @click.option('--verify', multiple=True, help='Validation command after success; repeat to run checks in order.')
+@click.option('--verify-checkpoint', is_flag=True, help='Save a workspace snapshot before the first verification command.')
 @click.option('--verify-timeout', type=click.FloatRange(min=0, min_open=True), help='Maximum seconds per verification command (noninteractive).')
 @click.argument('command', nargs=-1, type=click.UNPROCESSED, required=True)
-def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_timeout, protect_files, profile, no_verify):
+def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_timeout,
+        protect_files, profile, no_verify, verify_checkpoint):
     """Check a launch command, snapshot the workspace, and execute it."""
     if no_verify and (verify or verify_timeout is not None):
         raise click.UsageError('--no-verify cannot be combined with --verify or --verify-timeout.')
@@ -62,6 +64,8 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
     rollback_on_failure = selected['rollback_on_failure']
     verify = [] if no_verify else selected['verify']
     verify_timeout = None if no_verify else selected['verify_timeout']
+    if verify_checkpoint and not verify:
+        raise click.UsageError('--verify-checkpoint requires at least one verification command.')
     if protect_files and not (python_hooks or node_hooks):
         raise click.UsageError('--protect-files requires --python-hooks or --node-hooks.')
     if verify_timeout is not None and (not math.isfinite(verify_timeout) or not verify):
@@ -113,13 +117,22 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
         decision = core.evaluate(command, settings)
         audit.append(audit_path, 'cli', 'launch', 'confirmed' if decision['decision'] == 'confirmation-required' else decision['decision'], decision['matched_rules'])
         env = runtime.environment(settings, python_hooks, node_hooks, audit_path=audit_path, protected_root=root if protect_files else None)
+        capture_final = True
         try:
             result = subprocess.run(command, check=False, env=env, pass_fds=(lock_fd,))
             code = result.returncode
             record['command_exit_code'] = code
-            if validators:
-                record['verification']['state'] = 'skipped' if code != 0 else 'passed'
-            if code == 0:
+            if code != 0 and validators:
+                record['verification']['state'] = 'skipped'
+            if code == 0 and validators:
+                if verify_checkpoint:
+                    capture_final = False
+                    try:
+                        record['before_verification'] = core.capture(root, settings)
+                        core.save(root, record)
+                    except (OSError, ValueError) as exc:
+                        raise click.ClickException(f'Could not save verification checkpoint: {exc}') from exc
+                    capture_final = True
                 for index, argv in enumerate(validators, 1):
                     click.echo(f'Running verification {index}/{len(validators)}.', err=True)
                     decision = core.evaluate(argv, settings)
@@ -134,8 +147,8 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
                         click.echo(f'Verification command {index} could not be started.', err=True)
                     record['verification']['exit_codes'].append(code)
                     if code != 0:
-                        record['verification']['state'] = 'failed'
                         break
+                record['verification']['state'] = 'passed' if code == 0 else 'failed'
             record['exit_code'] = code
             if rollback_on_failure and code == 0:
                 record['automatic_rollback'] = 'not-needed'
@@ -144,9 +157,10 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
                 record['automatic_rollback'] = 'not-started'
             raise
         finally:
-            record['finished_at'] = datetime.now(timezone.utc).isoformat()
-            record['after'] = core.capture(root, settings)
-            core.save(root, record)
+            if capture_final:
+                record['finished_at'] = datetime.now(timezone.utc).isoformat()
+                record['after'] = core.capture(root, settings)
+                core.save(root, record)
         if rollback_on_failure and code != 0:
             try:
                 core.restore(root, record)
@@ -297,14 +311,16 @@ def history_command(as_json, limit):
 
 @main.command('diff')
 @click.option('--session', help='Exact session ID from history; defaults to the latest session.')
+@click.option('--phase', type=click.Choice(['session', 'agent', 'verification']), default='session',
+              help='Limit the diff to the agent or verification phase when a checkpoint is available.')
 @click.option('--contents', is_flag=True, help='Show text contents, which may include secrets.')
 @click.option('--path', 'paths', multiple=True, help='Only show this recorded workspace-relative path; repeatable.')
-def diff_command(session, contents, paths):
+def diff_command(session, phase, contents, paths):
     """Inspect recorded before/after changes without reading current workspace files."""
     root = Path.cwd()
     core.config(root)
     record = inspection.select(core.records(root, contents=False), session)
-    output = inspection.diff(record, contents, paths, root=root)
+    output = inspection.diff(record, contents, paths, root=root, phase=phase)
     click.echo(output or 'No changes recorded.\n', nl=False)
 
 

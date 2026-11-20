@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from click.testing import CliRunner
 from agentguard.cli import main
-from agentguard import core
+from agentguard import core, objects
 
 
 def python(code):
@@ -24,8 +24,11 @@ class Verification(unittest.TestCase):
     def tearDown(self):
         self.context.__exit__(None, None, None)
 
-    def execute(self, validators, source="from pathlib import Path; Path('source').write_text('agent')", rollback=False):
+    def execute(self, validators, source="from pathlib import Path; Path('source').write_text('agent')",
+                rollback=False, checkpoint=False):
         flags = ['--rollback-on-failure'] if rollback else []
+        if checkpoint:
+            flags.append('--verify-checkpoint')
         for command in validators:
             flags.extend(['--verify', command])
         return self.runner.invoke(main, ['run'] + flags + ['--', sys.executable, '-c', source])
@@ -39,7 +42,7 @@ class Verification(unittest.TestCase):
         self.assertEqual(Path('source').read_text(), 'agent')
 
     def test_failed_check_rolls_back_agent_and_validator_changes(self):
-        result = self.execute([python("from pathlib import Path; Path('artifact').touch(); raise SystemExit(9)"), python("from pathlib import Path; Path('skipped').touch()")], rollback=True)
+        result = self.execute([python("from pathlib import Path; Path('artifact').touch(); raise SystemExit(9)"), python("from pathlib import Path; Path('skipped').touch()")], rollback=True, checkpoint=True)
         self.assertEqual(result.exit_code, 9, result.output)
         self.assertEqual(Path('source').read_text(), 'before')
         self.assertFalse(Path('artifact').exists())
@@ -50,12 +53,82 @@ class Verification(unittest.TestCase):
         self.assertEqual(record['verification']['exit_codes'], [9])
         self.assertTrue(record['undone'])
         self.assertIn('added: "artifact"', self.runner.invoke(main, ['diff']).output)
+        self.assertEqual(self.runner.invoke(main, ['diff', '--phase', 'agent']).output,
+                         'modified: "source"\n')
+        self.assertEqual(self.runner.invoke(main, ['diff', '--phase', 'verification']).output,
+                         'added: "artifact"\n')
 
     def test_agent_failure_skips_validation(self):
-        result = self.execute([python("from pathlib import Path; Path('marker').touch()")], source='raise SystemExit(5)')
+        result = self.execute([python("from pathlib import Path; Path('marker').touch()")],
+                              source='raise SystemExit(5)', checkpoint=True)
         self.assertEqual(result.exit_code, 5)
         self.assertFalse(Path('marker').exists())
         self.assertEqual(core.records(Path.cwd())[-1]['verification']['state'], 'skipped')
+        diff = self.runner.invoke(main, ['diff', '--phase', 'agent'])
+        self.assertEqual(diff.exit_code, 1, diff.output)
+        self.assertIn('No verification checkpoint', diff.output)
+
+    def test_phase_diff_and_gc_keep_changes_visible_only_at_checkpoint(self):
+        validator = """
+import json
+from pathlib import Path
+
+snapshot = next(Path('.agentguard/snapshots').glob('*.json'))
+record = json.loads(snapshot.read_text())
+assert record['format_version'] == 3
+assert record['verification']['state'] == 'pending'
+assert 'source' in record['before_verification'] and 'after' not in record
+Path('source').write_text('before')
+Path('artifact').touch()
+"""
+        result = self.execute([python(validator)], checkpoint=True)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.runner.invoke(main, ['diff']).output, 'added: "artifact"\n')
+        gc = self.runner.invoke(main, ['gc'])
+        self.assertEqual(gc.exit_code, 0, gc.output)
+        phase = self.runner.invoke(main, ['diff', '--phase', 'agent', '--contents', '--path', 'source'])
+        self.assertEqual(phase.exit_code, 0, phase.output)
+        self.assertIn('+agent', phase.output)
+        phase = self.runner.invoke(main, ['diff', '--phase', 'verification', '--contents', '--path', 'source'])
+        self.assertEqual(phase.exit_code, 0, phase.output)
+        self.assertIn('+before', phase.output)
+
+        row = json.loads(self.runner.invoke(main, ['history', '--json']).output)[0]
+        self.assertTrue(row['verification_checkpoint'])
+        object_path = objects.directory(Path.cwd()) / objects.digest(b'agent')
+        object_path.write_bytes(b'corrupted checkpoint')
+        report = self.runner.invoke(main, ['doctor', '--json'])
+        self.assertEqual(report.exit_code, 1, report.output)
+        self.assertIn('checksum mismatch', report.output)
+
+    def test_checkpoint_budget_failure_stops_before_running_verification(self):
+        config = Path('.agentguard/config.toml')
+        config.write_text(config.read_text() + '\nmax_file_bytes = 6\n')
+        result = self.execute([python("from pathlib import Path; Path('marker').touch()")],
+                              source="from pathlib import Path; Path('source').write_text('over budget')",
+                              checkpoint=True)
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn('Could not save verification checkpoint', result.output)
+        self.assertFalse(Path('marker').exists())
+        record = core.records(Path.cwd())[0]
+        self.assertNotIn('after', record)
+        self.assertNotIn('before_verification', record)
+
+    def test_checkpoint_survives_incomplete_final_snapshot_and_recovery(self):
+        config = Path('.agentguard/config.toml')
+        default = config.read_text()
+        config.write_text(default + '\nmax_file_bytes = 6\n')
+        result = self.execute([python("from pathlib import Path; Path('artifact').write_text('over budget')")],
+                              checkpoint=True)
+        self.assertIn('budget exceeded', result.output)
+        self.assertEqual(self.runner.invoke(main, ['diff', '--phase', 'agent']).output,
+                         'modified: "source"\n')
+        self.assertIn('incomplete', self.runner.invoke(main, ['diff', '--phase', 'verification']).output)
+        config.write_text(default)
+        recovered = self.runner.invoke(main, ['recover'])
+        self.assertEqual(recovered.exit_code, 0, recovered.output)
+        self.assertIn('unavailable after recovery',
+                      self.runner.invoke(main, ['diff', '--phase', 'verification']).output)
 
     def test_missing_validator_is_failure_and_can_recover(self):
         result = self.execute(['/nonexistent/agentguard-validator'], rollback=True)
