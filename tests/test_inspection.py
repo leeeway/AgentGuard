@@ -48,11 +48,19 @@ class Inspection(unittest.TestCase):
         self.assertNotIn('human later', diff.output)
 
     def test_session_selection_and_path_filter(self):
-        self.run_script("from pathlib import Path; Path('a').write_text('one'); Path('b').write_text('two')")
+        self.run_script("from pathlib import Path; Path('a').write_text('one'); "
+                        "Path('a').chmod(0o640); Path('b').write_text('two')")
         first = core.records(Path.cwd())[0]['id']
-        self.run_script("from pathlib import Path; Path('c').touch()")
+        self.run_script("from pathlib import Path; Path('a').chmod(0o600); Path('c').touch()")
         result = self.runner.invoke(main, ['diff', '--session', first, '--path', 'a'])
         self.assertEqual(result.output, 'added: "a"\n')
+        result = self.runner.invoke(main, ['diff', '--json', '--session', first, '--path', 'a'])
+        self.assertEqual(json.loads(result.output), {
+            'session': first,
+            'phase': 'session',
+            'changes': [{'path': 'a', 'change': 'added', 'before': None,
+                         'after': {'kind': 'file', 'mode': 0o640}}],
+        })
         self.assertNotEqual(self.runner.invoke(main, ['diff', '--session', 'missing']).exit_code, 0)
         self.assertNotEqual(self.runner.invoke(main, ['diff', '--path', 'missing']).exit_code, 0)
         self.assertEqual(len(json.loads(self.runner.invoke(main, ['history', '--json', '--limit', '1']).output)), 1)
@@ -67,7 +75,7 @@ class Inspection(unittest.TestCase):
             return original_open(path, *args, **kwargs)
 
         commands = [
-            ['history', '--json'], ['status'], ['diff'], ['audit', '--json'],
+            ['history', '--json'], ['status'], ['diff'], ['diff', '--json'], ['audit', '--json'],
             ['prune', '--dry-run'], ['audit-prune', '--dry-run'],
         ]
         with patch.object(Path, 'open', open_metadata_only):
@@ -101,6 +109,26 @@ class Inspection(unittest.TestCase):
         self.assertIn('Binary content omitted', result.output)
         self.assertNotIn('\x1b', result.output)
         self.assertIn('No newline at end of file', result.output)
+
+    def test_json_content_is_opt_in_and_handles_binary_and_link_entries(self):
+        self.run_script("""from pathlib import Path
+Path('link').symlink_to('PRIVATE_TARGET')
+Path('text').write_text('PRIVATE_CONTENT')
+Path('binary').write_bytes(bytes([0]))
+""")
+        result = self.runner.invoke(main, ['diff', '--json'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn('PRIVATE_', result.output)
+        self.assertNotIn('patch', result.output)
+
+        result = self.runner.invoke(main, ['diff', '--json', '--contents'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        binary, link, text = json.loads(result.output)['changes']
+        self.assertEqual(binary['path'], 'binary')
+        self.assertIsNone(binary['patch'])
+        self.assertEqual(link['after'], {'kind': 'link', 'target': 'PRIVATE_TARGET'})
+        self.assertNotIn('patch', link)
+        self.assertIn('+PRIVATE_CONTENT', text['patch'])
 
     def test_legacy_and_incomplete_sessions(self):
         record = {'id': '00000000000000000001-' + 'a' * 32, 'before': {}}

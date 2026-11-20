@@ -95,6 +95,12 @@ Path('artifact').touch()
 
         row = json.loads(self.runner.invoke(main, ['history', '--json']).output)[0]
         self.assertTrue(row['verification_checkpoint'])
+        result = self.runner.invoke(main, ['diff', '--phase', 'verification', '--json', '--path', 'source'])
+        stage = json.loads(result.output)
+        self.assertEqual(stage['session'], row['id'])
+        self.assertEqual(stage['phase'], 'verification')
+        self.assertEqual([(change['path'], change['change']) for change in stage['changes']],
+                         [('source', 'modified')])
         object_path = objects.directory(Path.cwd()) / objects.digest(b'agent')
         object_path.write_bytes(b'corrupted checkpoint')
         report = self.runner.invoke(main, ['doctor', '--json'])

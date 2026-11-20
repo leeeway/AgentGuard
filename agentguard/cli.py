@@ -41,22 +41,24 @@ def init():
 @click.option('--protect-files/--no-protect-files', default=None, help='Block protected paths in enabled Python/Node.js hooks.')
 @click.option('--node-hooks/--no-node-hooks', default=None, help='Inject cooperative child_process checks into Node.js.')
 @click.option('--rollback-on-failure/--no-rollback-on-failure', default=None, help='Restore this session when the command exits nonzero.')
-@click.option('--no-verify', is_flag=True, help='Disable profile verification and its timeout for this run.')
+@click.option('--no-verify', is_flag=True, help='Disable profile verification, its timeout, and its checkpoint for this run.')
 @click.option('--verify', multiple=True, help='Validation command after success; repeat to run checks in order.')
-@click.option('--verify-checkpoint', is_flag=True, help='Save a workspace snapshot before the first verification command.')
+@click.option('--verify-checkpoint/--no-verify-checkpoint', default=None,
+              help='Save a workspace snapshot before the first verification command.')
 @click.option('--verify-timeout', type=click.FloatRange(min=0, min_open=True), help='Maximum seconds per verification command (noninteractive).')
 @click.argument('command', nargs=-1, type=click.UNPROCESSED, required=True)
 def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_timeout,
         protect_files, profile, no_verify, verify_checkpoint):
     """Check a launch command, snapshot the workspace, and execute it."""
-    if no_verify and (verify or verify_timeout is not None):
-        raise click.UsageError('--no-verify cannot be combined with --verify or --verify-timeout.')
+    if no_verify and (verify or verify_timeout is not None or verify_checkpoint):
+        raise click.UsageError('--no-verify cannot be combined with --verify, --verify-timeout, or --verify-checkpoint.')
     root = Path.cwd()
     settings = core.config(root)
     selected = profiles.resolve(settings, profile, {
         'python_hooks': python_hooks, 'node_hooks': node_hooks,
         'protect_files': protect_files, 'rollback_on_failure': rollback_on_failure,
         'verify': list(verify) if verify else None, 'verify_timeout': verify_timeout,
+        'verify_checkpoint': verify_checkpoint,
     })
     python_hooks = selected['python_hooks']
     node_hooks = selected['node_hooks']
@@ -64,6 +66,7 @@ def run(command, python_hooks, node_hooks, rollback_on_failure, verify, verify_t
     rollback_on_failure = selected['rollback_on_failure']
     verify = [] if no_verify else selected['verify']
     verify_timeout = None if no_verify else selected['verify_timeout']
+    verify_checkpoint = not no_verify and selected['verify_checkpoint']
     if verify_checkpoint and not verify:
         raise click.UsageError('--verify-checkpoint requires at least one verification command.')
     if protect_files and not (python_hooks or node_hooks):
@@ -205,7 +208,7 @@ def recover_command(session, dry_run):
         record['after'] = core.capture(root, {'snapshots': limits})
         if dry_run:
             click.echo(f"Recovery preview for session {record['id']}")
-            click.echo(inspection.diff(record) or 'No changes recorded.\n', nl=False)
+            click.echo(inspection.format_diff(inspection.diff_report(record)), nl=False)
             return
 
         record['recovered_at'] = datetime.now(timezone.utc).isoformat()
@@ -313,15 +316,19 @@ def history_command(as_json, limit):
 @click.option('--session', help='Exact session ID from history; defaults to the latest session.')
 @click.option('--phase', type=click.Choice(['session', 'agent', 'verification']), default='session',
               help='Limit the diff to the agent or verification phase when a checkpoint is available.')
+@click.option('--json', 'as_json', is_flag=True, help='Emit the selected comparison as JSON.')
 @click.option('--contents', is_flag=True, help='Show text contents, which may include secrets.')
 @click.option('--path', 'paths', multiple=True, help='Only show this recorded workspace-relative path; repeatable.')
-def diff_command(session, phase, contents, paths):
+def diff_command(session, phase, as_json, contents, paths):
     """Inspect recorded before/after changes without reading current workspace files."""
     root = Path.cwd()
     core.config(root)
     record = inspection.select(core.records(root, contents=False), session)
-    output = inspection.diff(record, contents, paths, root=root, phase=phase)
-    click.echo(output or 'No changes recorded.\n', nl=False)
+    report = inspection.diff_report(record, contents, paths, root=root, phase=phase)
+    if as_json:
+        click.echo(json.dumps(report))
+    else:
+        click.echo(inspection.format_diff(report, contents), nl=False)
 
 
 @main.command('gc')

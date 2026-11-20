@@ -49,6 +49,7 @@ protect_files = true
 rollback_on_failure = true
 verify = ["python -m unittest discover -s tests"]
 verify_timeout = 120
+verify_checkpoint = true
 
 [profiles.node_dev]
 node_hooks = true
@@ -62,13 +63,15 @@ agentguard run --profile python_ci -- python agent_worker.py
 agentguard run --profile node_dev -- node agent_worker.js
 # 仅本次保留失败改动
 agentguard run --profile python_ci --no-rollback-on-failure -- python agent_worker.py
-# 仅本次跳过保存的验证和验证超时
+# 保留验证，仅本次跳过检查点
+agentguard run --profile python_ci --no-verify-checkpoint -- python agent_worker.py
+# 仅本次跳过验证、超时和检查点
 agentguard run --profile python_ci --no-verify -- python agent_worker.py
 ```
 
-Profile 只有显式通过 `--profile` 选择才生效，不保存或替换主 Agent 命令。名称支持字母、数字、下划线和连字符，首位须为字母或数字。支持的键为 python_hooks、node_hooks、protect_files、rollback_on_failure（布尔值）、verify（命令字符串数组）、verify_timeout（有限正数秒数）；未知键、类型错误和无效命令引号会在读取配置时报告。profile 不改变 safety、privacy 或 snapshots 的工作区策略。
+Profile 只有显式通过 `--profile` 选择才生效，不保存或替换主 Agent 命令。名称支持字母、数字、下划线和连字符，首位须为字母或数字。布尔键包括 `python_hooks`、`node_hooks`、`protect_files`、`rollback_on_failure` 和 `verify_checkpoint`。`verify` 是命令字符串数组，`verify_timeout` 是有限正数秒数。未知键、类型错误和无效命令引号会在读取配置时报告。profile 不改变 safety、privacy 或 snapshots 的工作区策略。
 
-优先级为：内置默认值 → 指定 profile → 显式命令行选项。四个布尔参数均支持 `--no-python-hooks`、`--no-node-hooks`、`--no-protect-files`、`--no-rollback-on-failure` 关闭。命令行提供任何 `--verify` 时，会**替换** profile 的整个验证列表；未提供则沿用，超时仍按同样优先级合并。`--no-verify` 清除验证与超时，不能与显式 `--verify` / `--verify-timeout` 同用。组合后的文件保护仍要求至少一种 Hook，超时仍要求验证命令。
+显式命令行选项优先于 Profile，Profile 优先于内置默认值。布尔选项可用对应的 `--no-…` 参数关闭。命令行提供 `--verify` 时会替换 Profile 的整组验证命令，省略时沿用 Profile。超时和检查点只有存在生效的验证命令时才可启用。`--no-verify` 关闭本次验证及其超时和检查点，不能与显式的 `--verify`、`--verify-timeout` 或 `--verify-checkpoint` 同用。文件保护需要至少一种 Hook。
 
 验证命令在运行前与启动命令一起检查，profile 不绕过确认或阻断。verify 中不隐式执行 shell 展开。`profiles` 列表只显示能力、验证数量和超时，不显示验证命令参数；`history` 保存选用名称和实际生效选项的元数据，不复制验证命令文本。配置在启动时读取，执行过程中修改它不会改变本次已解析的验证或防护选项。请将 profile 配置视为可执行配置，只使用已审阅的验证命令。
 
@@ -138,9 +141,10 @@ agentguard run --verify-checkpoint --verify 'python -m unittest discover -s test
 agentguard diff --phase agent
 agentguard diff --phase verification
 agentguard diff --phase agent --contents --path src/main.py
+agentguard diff --phase verification --json
 ```
 
-`--verify-checkpoint` 需要至少一条来自命令行或 Profile 的验证命令。启用后，主命令成功退出时额外保存一次快照，再运行验证。`--phase agent` 比较会话开始与检查点，`--phase verification` 比较检查点与会话结束。默认 `diff` 和撤销、重做仍以整个会话为单位。自动回滚后仍可查看两段差异。
+可通过 `--verify-checkpoint` 或 Profile 中的 `verify_checkpoint = true` 启用检查点。主命令成功退出时额外保存一次快照，再运行验证。`--phase agent` 比较会话开始与检查点，`--phase verification` 比较检查点与会话结束。默认 `diff` 和撤销、重做仍以整个会话为单位。自动回滚后仍可查看两段差异。
 
 主命令失败时跳过检查点和验证。保存检查点失败时，验证不会启动，会话保留起始快照供 `recover` 使用。会话中断后，已保存的检查点仍可用于查看 Agent 阶段。补录的结束快照可能包含后续工作区编辑，补录后只提供 Agent 阶段差异和完整会话差异。`history --json` 的 `verification_checkpoint` 字段标记是否有检查点。
 
@@ -263,6 +267,7 @@ agentguard history --json --limit 5  # 机器可读元数据
 agentguard diff                      # 最近一次会话，包括已撤销会话
 agentguard diff --session <完整会话ID>
 agentguard diff --contents --path src/main.py
+agentguard diff --json --path src/main.py
 ```
 
 历史记录包括会话 ID、状态（complete / incomplete / partially-undone / undone）、UTC 开始与结束时间、退出码、启用的 Hook 和变更路径数量。旧快照缺少的元数据显示为空；没有成功取得进程退出状态时，退出码显示 unknown。只记录会话元数据，不保存启动命令参数。普通历史随 `max_history` 裁剪，固定及待处理恢复会话不计入该数量。
@@ -270,6 +275,8 @@ agentguard diff --contents --path src/main.py
 `diff` 比较保存的执行前后快照，不读取当前工作区内容。默认只显示新增、删除、修改路径；`--contents` 读取并校验选中变更的文件内容，再显示 UTF-8 文本 unified diff、权限和符号链接目标。正文可能包含凭据。二进制内容省略，终端控制字符转义。`--path` 可重复，按工作区相对路径精确匹配。不完整会话没有最终差异；`--session` 使用完整会话 ID，不支持前缀匹配。运行时决策日志见下文“会话决策审计”，不覆盖 shell 内部每条命令。
 
 `history`、`status`、路径级 `diff` 和裁剪预览根据快照清单判断变更，并检查引用的文件对象是否存在。需要验证全部对象的内容哈希时，运行 `agentguard doctor`。旧版内嵌式快照继续从清单读取。
+
+`diff --json` 返回会话 ID `session`、比较阶段 `phase` 和按路径排序的 `changes` 数组。每条变更包含 `path`、`change`（added、deleted 或 modified）、`before` 和 `after`。前后两侧记录文件类型与适用的权限位，缺失侧为 `null`。无变更时数组为空，指定的 `--path` 在所选阶段无变更时会报错。显式添加 `--contents` 可查看符号链接目标和转义后的文本差异 `patch`，二进制文件的 `patch` 为 `null`。
 
 ### 快照排除规则
 
@@ -594,6 +601,7 @@ max_history = 30
 - [x] 可选失败自动恢复，保留退出码与失败差异审计
 - [x] 顺序验证命令、失败停止及验证失败自动恢复
 - [x] 验证前检查点与 Agent、验证阶段的差异查询
+- [x] 可复用检查点配置与分阶段 JSON 差异报告
 - [x] 命名运行 Profile、显式命令行覆盖与能力查询
 - [x] 验证超时、进程组清理和超时审计
 - [x] 会话历史、JSON 元数据与按路径查看文本差异

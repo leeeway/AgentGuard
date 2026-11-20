@@ -70,16 +70,36 @@ else: raise AssertionError('profile protection inactive')
         self.assertEqual(row['verification']['requested'], 1)
 
     def test_no_verify_clears_profile_checks_and_timeout(self):
-        self.configure(verify=[python('raise SystemExit(8)')], verify_timeout=1)
+        self.configure(verify=[python('raise SystemExit(8)')], verify_timeout=1, verify_checkpoint=True)
         result = self.execute(['--profile', 'ci', '--no-verify'])
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(core.records(Path.cwd())[-1]['verification']['state'], 'disabled')
-        self.assertNotIn('timeout_seconds', core.records(Path.cwd())[-1]['verification'])
-        for flags in (['--no-verify', '--verify', 'echo ok'], ['--no-verify', '--verify-timeout', '1']):
+        record = core.records(Path.cwd())[-1]
+        self.assertEqual(record['verification']['state'], 'disabled')
+        self.assertNotIn('timeout_seconds', record['verification'])
+        self.assertNotIn('before_verification', record)
+        for flags in (['--no-verify', '--verify', 'echo ok'], ['--no-verify', '--verify-timeout', '1'],
+                      ['--no-verify', '--verify-checkpoint']):
             with patch('agentguard.cli.subprocess.run') as run:
                 result = self.execute(flags)
             self.assertEqual(result.exit_code, 2)
             run.assert_not_called()
+
+    def test_profile_checkpoint_can_be_disabled_for_one_run(self):
+        self.configure(verify=[python("from pathlib import Path; Path('checked').touch()")],
+                       verify_checkpoint=True)
+        profiles = self.runner.invoke(main, ['profiles', '--json'])
+        self.assertTrue(json.loads(profiles.output)[0]['verify_checkpoint'])
+
+        result = self.execute(['--profile', 'ci'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.runner.invoke(main, ['diff', '--phase', 'verification']).output,
+                         'added: "checked"\n')
+
+        result = self.execute(['--profile', 'ci', '--no-verify-checkpoint'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        record = core.records(Path.cwd())[-1]
+        self.assertEqual(record['verification']['state'], 'passed')
+        self.assertNotIn('before_verification', record)
 
     def test_profile_is_opt_in_and_positive_overrides_work(self):
         self.configure(python_hooks=False, protect_files=False, verify=[python('raise SystemExit(3)')], verify_timeout=1)
@@ -95,7 +115,7 @@ else: raise AssertionError('profile protection inactive')
 
     def test_unknown_profile_and_invalid_combinations_do_not_start(self):
         self.configure(python_hooks=True, protect_files=True)
-        for flags in (['--profile', 'missing'], ['--profile', 'ci', '--no-python-hooks']):
+        for flags in (['--profile', 'missing'], ['--profile', 'ci', '--no-python-hooks'], ['--verify-checkpoint']):
             with patch('agentguard.cli.subprocess.run') as run:
                 result = self.execute(flags)
             self.assertNotEqual(result.exit_code, 0)
@@ -104,7 +124,8 @@ else: raise AssertionError('profile protection inactive')
 
     def test_invalid_profile_schema_is_rejected_without_command_disclosure(self):
         cases = ['profiles = []', '[profiles]\nci = 1',
-                 '[profiles.ci]\npython_hooks = "yes"', '[profiles.ci]\nverify = "command"',
+                 '[profiles.ci]\npython_hooks = "yes"', '[profiles.ci]\nverify_checkpoint = "yes"',
+                 '[profiles.ci]\nverify = "command"',
                  '[profiles.ci]\nverify = [1]', '[profiles.ci]\nverify = ["\'PRIVATE_TOKEN"]',
                  '[profiles.ci]\nverify_timeout = true', '[profiles.ci]\nverify_timeout = nan',
                  '[profiles.ci]\nverify_timeout = -1', '[profiles.ci]\nunknown_flag = true',

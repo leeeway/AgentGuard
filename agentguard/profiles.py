@@ -3,7 +3,7 @@ import math
 import re
 import shlex
 
-BOOLEAN_OPTIONS = ('python_hooks', 'node_hooks', 'protect_files', 'rollback_on_failure')
+BOOLEAN_OPTIONS = ('python_hooks', 'node_hooks', 'protect_files', 'rollback_on_failure', 'verify_checkpoint')
 KEYS = set(BOOLEAN_OPTIONS) | {'verify', 'verify_timeout'}
 
 
