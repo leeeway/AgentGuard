@@ -91,6 +91,11 @@ class RedoSessions(unittest.TestCase):
         record = core.records(Path.cwd())[-1]
         Path('a').write_text('human edit')
         self.invoke('redo', code=1)
+        blocked = self.invoke('redo', '--json', code=1)
+        self.assertEqual(json.loads(blocked.output), {
+            'operation': 'redo', 'session': record['id'], 'dry_run': False,
+            'paths': ['a', 'b'], 'conflicts': ['a'],
+        })
         self.assertEqual(Path('a').read_text(), 'human edit')
         self.assertEqual(Path('b').read_text(), 'before b')
         self.assertEqual(core.records(Path.cwd())[-1], record)
@@ -104,6 +109,10 @@ class RedoSessions(unittest.TestCase):
         record = core.records(Path.cwd())[-1]
         workspace = core.capture(Path.cwd())
         self.assertIn('would reapply: "a"', self.invoke('redo', '--dry-run').output)
+        preview = self.invoke('redo', '--dry-run', '--json', '--session', record['id'], '--path', 'a')
+        self.assertEqual(json.loads(preview.output), {
+            'operation': 'redo', 'session': record['id'], 'dry_run': True, 'paths': ['a'], 'conflicts': [],
+        })
         self.assertEqual(core.capture(Path.cwd()), workspace)
         self.assertEqual(core.records(Path.cwd())[-1], record)
         for path in ('../escape', 'missing', 'd', 'd/file'):
@@ -180,6 +189,7 @@ class RedoSessions(unittest.TestCase):
 
     def test_no_redo_and_explicit_session_errors(self):
         self.assertIn('No sessions to redo', self.invoke('redo').output)
+        self.assertIsNone(json.loads(self.invoke('redo', '--dry-run', '--json').output)['session'])
         record = self.run_script()
         self.invoke('redo', '--session', record['id'], code=1)
         self.invoke('redo', '--session', 'missing', code=1)

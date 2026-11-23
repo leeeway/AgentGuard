@@ -217,37 +217,63 @@ def recover_command(session, dry_run):
     click.echo('Use agentguard undo --dry-run to review the rollback.')
 
 
+def _emit_restore_report(operation, record, dry_run, paths, conflicts=()):
+    click.echo(json.dumps({
+        'operation': operation, 'session': record['id'] if record else None,
+        'dry_run': dry_run, 'paths': paths, 'conflicts': list(conflicts),
+    }))
+
+
+def _restore_session(apply, operation, root, record, dry_run, paths, as_json):
+    try:
+        touched = apply(root, record, dry_run=dry_run, paths=paths) if record is not None else []
+    except core.RestoreConflict as exc:
+        if not as_json:
+            raise
+        _emit_restore_report(operation, record, dry_run, exc.paths, exc.conflicts)
+        raise click.exceptions.Exit(1) from exc
+    if as_json:
+        _emit_restore_report(operation, record, dry_run, touched)
+    return touched
+
+
 @main.command()
 @click.option('--all', 'undo_all', is_flag=True, help='Restore the latest session (currently one snapshot per session).')
+@click.option('--session', help='Require the latest non-undone session to match this exact ID.')
 @click.option('--dry-run', is_flag=True, help='Check conflicts and preview paths without changing files.')
+@click.option('--json', 'as_json', is_flag=True, help='Emit the session, paths, and any workspace conflicts as JSON.')
 @click.option('--path', 'paths', multiple=True, help='Restore only this exact relative file/link path; repeatable.')
-def undo(undo_all, dry_run, paths):
+def undo(undo_all, session, dry_run, as_json, paths):
     """Undo the latest session, refusing to overwrite subsequent edits."""
     if undo_all and paths:
         raise click.UsageError('--all and --path cannot be combined.')
     root = Path.cwd()
     core.config(root)
     with workspace_lock(core.store(root)):
-        pending = [r for r in core.records(root) if not r.get('undone')]
-        if not pending:
-            click.echo('No sessions to undo.')
-            return
-        if 'after' not in pending[-1]:
+        record = next((r for r in reversed(core.records(root)) if not r.get('undone')), None)
+        if session is not None and (record is None or record['id'] != session):
+            raise click.ClickException('The requested session is not the latest non-undone session.')
+        if record is not None and 'after' not in record:
             raise click.ClickException('The latest session is incomplete. Run agentguard recover --dry-run to inspect it.')
-        touched = core.restore(root, pending[-1], dry_run=dry_run, paths=paths)
-        if dry_run:
-            for path in touched:
-                click.echo('would restore: ' + json.dumps(path, ensure_ascii=False))
-            click.echo(f'Undo preview: {len(touched)} paths; no files changed.')
-            return
-    click.echo('Restored selected paths.' if paths else 'Restored the latest session.')
+        touched = _restore_session(core.restore, 'undo', root, record, dry_run, paths, as_json)
+    if as_json:
+        return
+    if record is None:
+        click.echo('No sessions to undo.')
+    elif dry_run:
+        for path in touched:
+            click.echo('would restore: ' + json.dumps(path, ensure_ascii=False))
+        click.echo(f'Undo preview: {len(touched)} paths; no files changed.')
+    else:
+        click.echo('Restored selected paths.' if paths else 'Restored the latest session.')
 
 
 @main.command('redo')
 @click.option('--session', help='Full session ID; defaults to the most recently undone session.')
 @click.option('--dry-run', is_flag=True, help='Preview redo and check conflicts without changing files.')
+@click.option('--json', 'as_json', is_flag=True, help='Emit the session, paths, and any workspace conflicts as JSON.')
 @click.option('--path', 'paths', multiple=True, help='Reapply only this exact relative file/link path; repeatable.')
-def redo_command(session, dry_run, paths):
+def redo_command(session, dry_run, as_json, paths):
     """Reapply recorded agent results for previously undone paths."""
     root = Path.cwd()
     core.config(root)
@@ -257,17 +283,18 @@ def redo_command(session, dry_run, paths):
             record = inspection.select(history, session)
         else:
             candidates = [record for record in history if core.undone_paths(record)]
-            if not candidates:
-                click.echo('No sessions to redo.')
-                return
-            record = max(candidates, key=lambda r: r.get('last_undo_ns', 0))
-        touched = core.reapply(root, record, dry_run=dry_run, paths=paths)
-        if dry_run:
-            for path in touched:
-                click.echo('would reapply: ' + json.dumps(path, ensure_ascii=False))
-            click.echo(f'Redo preview: {len(touched)} paths; no workspace files changed.')
-        else:
-            click.echo(f"Reapplied {len(touched)} paths from session {record['id']}.")
+            record = max(candidates, key=lambda r: r.get('last_undo_ns', 0), default=None)
+        touched = _restore_session(core.reapply, 'redo', root, record, dry_run, paths, as_json)
+    if as_json:
+        return
+    if record is None:
+        click.echo('No sessions to redo.')
+    elif dry_run:
+        for path in touched:
+            click.echo('would reapply: ' + json.dumps(path, ensure_ascii=False))
+        click.echo(f'Redo preview: {len(touched)} paths; no workspace files changed.')
+    else:
+        click.echo(f"Reapplied {len(touched)} paths from session {record['id']}.")
 
 
 @main.command()

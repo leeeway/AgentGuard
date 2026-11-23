@@ -42,13 +42,43 @@ class SelectiveUndo(unittest.TestCase):
 
     def test_selected_paths_preflight_as_a_group(self):
         self.execute()
+        record = core.records(Path.cwd())[0]
         Path('b').write_text('human')
-        result = self.runner.invoke(main, ['undo', '--path', 'a', '--path', 'b'])
-        self.assertNotEqual(result.exit_code, 0)
+        result = self.runner.invoke(main, ['undo', '--dry-run', '--json', '--path', 'a', '--path', 'b'])
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertEqual(json.loads(result.output), {
+            'operation': 'undo', 'session': record['id'], 'dry_run': True,
+            'paths': ['a', 'b'], 'conflicts': ['b'],
+        })
         self.assertEqual(Path('a').read_text(), 'agent a')
+        self.assertEqual(core.records(Path.cwd())[0], record)
         # Conflict on an unselected path does not block restoration of a.
         self.assertEqual(self.runner.invoke(main, ['undo', '--path', 'a']).exit_code, 0)
         self.assertEqual(Path('b').read_text(), 'human')
+
+    def test_undo_session_guard_rejects_a_preview_after_a_new_session(self):
+        self.execute()
+        preview = self.runner.invoke(main, ['undo', '--dry-run', '--json'])
+        self.assertEqual(preview.exit_code, 0, preview.output)
+        first = json.loads(preview.output)
+        self.assertEqual(first['paths'], ['a', 'b'])
+        self.assertEqual(first['conflicts'], [])
+
+        self.execute("from pathlib import Path; Path('new').touch()")
+        latest = core.records(Path.cwd())[-1]['id']
+        stale = self.runner.invoke(main, ['undo', '--session', first['session']])
+        self.assertEqual(stale.exit_code, 1, stale.output)
+        self.assertIn('not the latest non-undone session', stale.output)
+        self.assertTrue(Path('new').exists())
+        self.assertEqual(Path('a').read_text(), 'agent a')
+
+        result = self.runner.invoke(main, ['undo', '--session', latest, '--json'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(json.loads(result.output), {
+            'operation': 'undo', 'session': latest, 'dry_run': False, 'paths': ['new'], 'conflicts': [],
+        })
+        self.assertFalse(Path('new').exists())
+        self.assertEqual(Path('a').read_text(), 'agent a')
 
     def test_dry_run_and_invalid_selections(self):
         self.execute()

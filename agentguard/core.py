@@ -198,6 +198,13 @@ def changes(before, after):
     return sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
 
 
+class RestoreConflict(ValueError):
+    def __init__(self, operation, paths, conflicts):
+        self.paths = paths
+        self.conflicts = sorted(set(conflicts))
+        super().__init__(operation + ' refused: files changed since the recorded state: ' + ', '.join(self.conflicts))
+
+
 def restore(root, record, dry_run=False, paths=()):
     validation.record(record)
     if 'after' not in record:
@@ -216,6 +223,7 @@ def restore(root, record, dry_run=False, paths=()):
     record['undone'] = len(record['restored_paths']) == len(original_changes)
     record['last_undo_ns'] = time.time_ns()
     save(root, record)
+    return touched
 
 
 def undone_paths(record):
@@ -294,7 +302,7 @@ def _apply_restore(root, before, after, touched, current, dry_run, operation):
                     if name not in touched:
                         conflicts.append(name)
     if conflicts:
-        raise ValueError(operation + ' refused: files changed since the recorded state: ' + ', '.join(sorted(set(conflicts))))
+        raise RestoreConflict(operation, touched, conflicts)
     if dry_run:
         return touched
     # Make affected existing directories traversable until restoration finishes.
