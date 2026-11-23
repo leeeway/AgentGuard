@@ -140,8 +140,6 @@ def save(root, record):
     validation.record(record)
     directory = snapshot_directory(root)
     directory.mkdir(mode=0o700, exist_ok=True)
-    if not re.fullmatch(r'[0-9]{20}-[0-9a-f]{32}', record['id']):
-        raise ValueError('Invalid snapshot identifier')
     packed = objects.pack(root, record)
     path = directory / (record['id'] + '.json')
     temporary = directory / (uuid.uuid4().hex + '.tmp')
@@ -180,6 +178,20 @@ def records(root, *, contents=True):
     if not contents:
         objects.check_references(root, history)
     return history
+
+
+def load_session_manifest(root, session=None):
+    directory = snapshot_directory(root)
+    if session is None:
+        path = max(directory.glob('*.json'), default=None)
+        if path is None:
+            raise ValueError('No recorded sessions.')
+    else:
+        validation.session_id(session)
+        path = directory / (session + '.json')
+        if not path.is_symlink() and not path.exists():
+            raise ValueError('Session not found: ' + session)
+    return load_record(root, path, contents=False)
 
 
 def changes(before, after):

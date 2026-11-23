@@ -65,6 +65,46 @@ class Inspection(unittest.TestCase):
         self.assertNotEqual(self.runner.invoke(main, ['diff', '--path', 'missing']).exit_code, 0)
         self.assertEqual(len(json.loads(self.runner.invoke(main, ['history', '--json', '--limit', '1']).output)), 1)
 
+    def test_show_emits_exact_bytes_from_selected_session(self):
+        Path('asset').write_bytes(b'original')
+        Path('other').write_bytes(b'unrelated object')
+        payload = b'\x00\xff\r\nno final newline'
+        self.run_script(f"from pathlib import Path; Path('asset').write_bytes({payload!r})")
+        root = Path.cwd()
+        first = core.records(root, contents=False)[0]['id']
+        (objects.directory(root) / objects.digest(b'unrelated object')).unlink()
+        Path('asset').write_bytes(b'later edit')
+
+        latest = self.runner.invoke(main, ['show', '--', 'asset'])
+        self.assertEqual(latest.exit_code, 0, latest.output)
+        self.assertEqual(latest.stdout_bytes, payload)
+        later = core.snapshot_directory(root) / ('9' * 20 + '-' + 'a' * 32 + '.json')
+        later.write_text('unreadable manifest')
+        result = self.runner.invoke(main, ['show', '--session', first, '--snapshot', 'before', '--', 'asset'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(result.stdout_bytes, b'original')
+        self.assertEqual(Path('asset').read_bytes(), b'later edit')
+
+    def test_show_requires_a_recorded_regular_file_and_valid_session_id(self):
+        Path('link').symlink_to('target')
+        Path('folder').mkdir()
+        self.run_script("from pathlib import Path; Path('target').write_bytes(b'')")
+        result = self.runner.invoke(main, ['show', 'target'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(result.stdout_bytes, b'')
+        Path('later').touch()
+
+        for args, error in (
+            (['link'], 'not a regular file'),
+            (['folder'], 'not a regular file'),
+            (['later'], 'absent from the selected snapshot'),
+            (['--session', '../config', 'target'], 'Invalid snapshot identifier'),
+        ):
+            with self.subTest(args=args):
+                result = self.runner.invoke(main, ['show', *args])
+                self.assertEqual(result.exit_code, 1, result.output)
+                self.assertIn(error, result.output)
+
     def test_summary_commands_and_prune_previews_never_open_content_objects(self):
         self.run_script("from pathlib import Path; Path('a').write_text('recorded')")
         original_open = Path.open
@@ -98,9 +138,10 @@ class Inspection(unittest.TestCase):
         self.run_script("from pathlib import Path; Path('a').write_text('recorded')")
         (Path('.agentguard/objects') / objects.digest(b'recorded')).write_bytes(b'changed')
         self.assertEqual(self.runner.invoke(main, ['diff']).output, 'added: "a"\n')
-        result = self.runner.invoke(main, ['diff', '--contents'])
-        self.assertEqual(result.exit_code, 1)
-        self.assertIn('checksum mismatch', result.output)
+        for command in (['diff', '--contents'], ['show', 'a']):
+            result = self.runner.invoke(main, command)
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn('checksum mismatch', result.output)
 
     def test_binary_and_terminal_controls(self):
         self.run_script("from pathlib import Path; Path('binary').write_bytes(b'\\x00abc'); Path('text').write_text('\\x1b[31mred')")

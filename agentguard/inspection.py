@@ -49,6 +49,19 @@ def select(history, session=None):
     return history[-1]
 
 
+def snapshot_file(root, session, snapshot, path):
+    record = core.load_session_manifest(root, session)
+    field = snapshot.replace('-', '_')
+    if field not in record:
+        raise ValueError(f'The {snapshot} snapshot is unavailable for this session.')
+    entry = record[field].get(path)
+    if entry is None:
+        raise ValueError('File is absent from the selected snapshot: ' + json.dumps(path))
+    if entry['kind'] != 'file':
+        raise ValueError('Snapshot entry is not a regular file: ' + json.dumps(path))
+    return _file_bytes(root, entry)
+
+
 def diff_report(record, contents=False, paths=(), *, root=None, phase='session'):
     if phase != 'session' and 'before_verification' not in record:
         raise ValueError('No verification checkpoint available for this session.')
@@ -86,15 +99,14 @@ def _metadata(entry, contents):
     return {'kind': 'link', 'target': entry['target']} if contents else {'kind': 'link'}
 
 
+def _file_bytes(root, entry):
+    if 'data' in entry:
+        return base64.b64decode(entry['data'], validate=True)
+    return objects.read(root, entry['object'])
+
+
 def _text_patch(path, old, new, root):
-    data = []
-    for entry in (old, new):
-        if entry is None:
-            data.append(b'')
-        elif 'data' in entry:
-            data.append(base64.b64decode(entry['data'], validate=True))
-        else:
-            data.append(objects.read(root, entry['object']))
+    data = [_file_bytes(root, entry) if entry is not None else b'' for entry in (old, new)]
     try:
         texts = [content.decode('utf-8') for content in data]
     except UnicodeError:

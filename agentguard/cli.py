@@ -331,6 +331,17 @@ def diff_command(session, phase, as_json, contents, paths):
         click.echo(inspection.format_diff(report, contents), nl=False)
 
 
+@main.command('show')
+@click.option('--session', help='Full session ID; defaults to the latest recorded session.')
+@click.option('--snapshot', type=click.Choice(['before', 'before-verification', 'after']),
+              default='after', show_default=True, help='Select the recorded version of the file.')
+@click.argument('path')
+def show_command(session, snapshot, path):
+    """Write the exact bytes of one recorded regular file to stdout."""
+    data = inspection.snapshot_file(Path.cwd(), session, snapshot, path)
+    click.echo(data, nl=False)
+
+
 @main.command('storage')
 @click.option('--json', 'as_json', is_flag=True, help='Emit snapshot and object sizes as JSON.')
 def storage_command(as_json):

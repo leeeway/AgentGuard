@@ -10,6 +10,11 @@ from .profiles import valid_name
 SNAPSHOT_FIELDS = ('before', 'before_verification', 'after')
 
 
+def session_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[0-9]{20}-[0-9a-f]{32}', value):
+        raise ValueError('Invalid snapshot identifier')
+
+
 def manifest(value, *, object_refs=False):
     if not isinstance(value, dict):
         raise ValueError('Snapshot manifest must be an object')
@@ -63,8 +68,7 @@ def record(value, *, object_refs=False):
     for field in SNAPSHOT_FIELDS[1:]:
         if field in value:
             manifest(value[field], object_refs=object_refs)
-    if not isinstance(value.get('id'), str) or not re.fullmatch(r'[0-9]{20}-[0-9a-f]{32}', value['id']):
-        raise ValueError('Invalid snapshot identifier')
+    session_id(value.get('id'))
     if value.get('profile') is not None and not valid_name(value['profile']):
         raise ValueError('Invalid run profile name')
     if 'last_undo_ns' in value and (type(value['last_undo_ns']) is not int or value['last_undo_ns'] <= 0):

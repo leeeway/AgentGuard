@@ -278,6 +278,16 @@ agentguard diff --json --path src/main.py
 
 `diff --json` 返回会话 ID `session`、比较阶段 `phase` 和按路径排序的 `changes` 数组。每条变更包含 `path`、`change`（added、deleted 或 modified）、`before` 和 `after`。前后两侧记录文件类型与适用的权限位，缺失侧为 `null`。无变更时数组为空，指定的 `--path` 在所选阶段无变更时会报错。显式添加 `--contents` 可查看符号链接目标和转义后的文本差异 `patch`，二进制文件的 `patch` 为 `null`。
 
+### 从快照提取单个文件
+
+```bash
+agentguard show --snapshot before -- src/main.py > /tmp/main.before.py
+agentguard show --snapshot before-verification -- dist/result.bin > /tmp/result.bin
+agentguard show --session <完整会话ID> -- src/main.py
+```
+
+`show` 默认从最新会话的结束快照提取文件，可指定完整会话 ID 和快照阶段。路径必须精确匹配快照中的相对路径，且对应常规文件。输出是原始字节，保留二进制内容和换行。命令只读取所选会话及文件，通过校验后才输出，适合工作区已有后续编辑或该会话已撤销的情况。中断会话中已保存的起始快照和验证前检查点同样可用。
+
 ### 快照排除规则
 
 在现有 `[snapshots]` 配置表中添加：
@@ -612,6 +622,7 @@ max_history = 30
 - [x] 验证超时、进程组清理和超时审计
 - [x] 会话历史、JSON 元数据与按路径查看文本差异
 - [x] 基于清单的历史查询、按需读取差异正文与去重校验
+- [x] 从指定会话和阶段提取单个文件的原始字节
 - [x] 会话决策审计日志、Python/Node.js Hook 事件与 JSON 查询
 - [x] 审计归档日志保留策略、清理预览与快照关联保护
 - [ ] 更广泛进程事件覆盖
