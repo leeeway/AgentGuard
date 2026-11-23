@@ -331,6 +331,27 @@ def diff_command(session, phase, as_json, contents, paths):
         click.echo(inspection.format_diff(report, contents), nl=False)
 
 
+@main.command('storage')
+@click.option('--json', 'as_json', is_flag=True, help='Emit snapshot and object sizes as JSON.')
+def storage_command(as_json):
+    """Report snapshot storage and estimate reclaimable object space."""
+    root = Path.cwd()
+    core.config(root)
+    with workspace_lock(core.store(root)):
+        report = objects.storage_usage(root)
+    if as_json:
+        click.echo(json.dumps(report))
+    else:
+        snapshots = report['snapshots']
+        retained = report['objects']['retained']
+        reclaimable = report['objects']['reclaimable']
+        click.echo(f"Snapshot manifests: {snapshots['count']} ({snapshots['bytes']} bytes)")
+        click.echo(f"Logical file contents in snapshots: {snapshots['logical_file_bytes']} bytes")
+        click.echo(f"Retained objects: {retained['count']} ({retained['bytes']} bytes)")
+        click.echo(f"Reclaimable objects: {reclaimable['count']} ({reclaimable['bytes']} bytes)")
+        click.echo(f"Total snapshot storage: {report['total_bytes']} bytes")
+
+
 @main.command('gc')
 @click.option('--dry-run', is_flag=True, help='Preview unreferenced content without deleting it.')
 def garbage_collect(dry_run):

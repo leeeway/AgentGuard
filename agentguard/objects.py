@@ -1,9 +1,11 @@
 """Content-addressed snapshot objects; manifests remain backward compatible."""
 import base64
+from collections import Counter
 import copy
 import hashlib
 import os
 import re
+import stat
 import uuid
 
 from .validation import SNAPSHOT_FIELDS
@@ -97,15 +99,25 @@ def unpack(root, record):
     return result
 
 
-def check_references(root, manifests, *, verify=False):
-    """Check each distinct object once, streaming bytes when verifying hashes."""
-    names = {
-        entry['object']
-        for record in manifests if format_version(record) >= 2
+def _file_entries(record):
+    return (
+        entry
         for field in SNAPSHOT_FIELDS
         for entry in record.get(field, {}).values()
         if entry['kind'] == 'file'
-    }
+    )
+
+
+def _object_names(history):
+    for record in history:
+        if format_version(record) >= 2:
+            for entry in _file_entries(record):
+                yield entry['object']
+
+
+def check_references(root, manifests, *, verify=False):
+    """Check each distinct object once, streaming bytes when verifying hashes."""
+    names = set(_object_names(manifests))
     if not names:
         return names
     folder = directory(root)
@@ -121,25 +133,65 @@ def check_references(root, manifests, *, verify=False):
     return names
 
 
+def _legacy_contents(history):
+    for record in history:
+        if format_version(record) == 1:
+            for entry in _file_entries(record):
+                yield base64.b64decode(entry['data'], validate=True)
+
+
+def _object_paths(root):
+    folder = directory(root)
+    if folder.exists():
+        for path in sorted(folder.iterdir()):
+            if re.fullmatch(r'[0-9a-f]{64}', path.name):
+                yield path
+
+
+def _object_size(path):
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError('Unsafe snapshot object encountered: ' + path.name)
+    return info.st_size
+
+
+def storage_usage(root):
+    """Report snapshot sizes from manifests and object metadata."""
+    from .core import records, snapshot_directory
+
+    history = records(root, contents=False)
+    snapshots = snapshot_directory(root)
+    manifest_bytes = sum((snapshots / (record['id'] + '.json')).stat().st_size for record in history)
+    references = Counter(_object_names(history))
+    legacy_names = set()
+    logical_bytes = 0
+    for data in _legacy_contents(history):
+        legacy_names.add(digest(data))
+        logical_bytes += len(data)
+
+    retained = {'count': 0, 'bytes': 0}
+    reclaimable = {'count': 0, 'bytes': 0}
+    for path in _object_paths(root):
+        size = _object_size(path)
+        copies = references[path.name]
+        logical_bytes += copies * size
+        bucket = retained if copies or path.name in legacy_names else reclaimable
+        bucket['count'] += 1
+        bucket['bytes'] += size
+
+    return {
+        'snapshots': {'count': len(history), 'bytes': manifest_bytes, 'logical_file_bytes': logical_bytes},
+        'objects': {'retained': retained, 'reclaimable': reclaimable},
+        'total_bytes': manifest_bytes + retained['bytes'] + reclaimable['bytes'],
+    }
+
+
 def collect(root, dry_run=True):
     from .core import records
     history = records(root, contents=False)
     referenced = check_references(root, history, verify=True)
-    for record in history:
-        if format_version(record) != 1:
-            continue
-        for field in SNAPSHOT_FIELDS:
-            for entry in record.get(field, {}).values():
-                if entry['kind'] == 'file':
-                    referenced.add(digest(base64.b64decode(entry['data'], validate=True)))
-    candidates = []
-    folder = directory(root)
-    if folder.exists():
-        for path in sorted(folder.iterdir()):
-            if re.fullmatch(r'[0-9a-f]{64}', path.name) and path.name not in referenced:
-                if path.is_symlink() or not path.is_file():
-                    raise ValueError('Unsafe snapshot object encountered during cleanup')
-                candidates.append((path, path.stat().st_size))
+    referenced.update(digest(data) for data in _legacy_contents(history))
+    candidates = [(path, _object_size(path)) for path in _object_paths(root) if path.name not in referenced]
     if not dry_run:
         for path, _ in candidates:
             path.unlink()

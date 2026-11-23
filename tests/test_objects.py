@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 from click.testing import CliRunner
 from agentguard import core, objects
@@ -44,6 +45,12 @@ class ObjectStore(unittest.TestCase):
         folder = Path('.agentguard/snapshots')
         folder.mkdir()
         (folder / (record['id'] + '.json')).write_text(json.dumps(record))
+        objects.write(Path.cwd(), b'legacy')
+        usage = json.loads(self.runner.invoke(main, ['storage', '--json']).output)
+        self.assertEqual(usage['snapshots']['logical_file_bytes'], 6)
+        self.assertEqual(usage['objects']['retained'], {'count': 1, 'bytes': 6})
+        self.assertEqual(usage['objects']['reclaimable'], {'count': 0, 'bytes': 0})
+        self.assertEqual(objects.collect(Path.cwd()), (0, 0))
         diff = self.runner.invoke(main, ['diff', '--contents'])
         self.assertEqual(diff.exit_code, 0, diff.output)
         self.assertIn('-legacy', diff.output)
@@ -51,6 +58,44 @@ class ObjectStore(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(Path('a').read_text(), 'legacy')
         self.assertTrue(core.records(Path.cwd())[0]['undone'])
+
+    def test_storage_reports_shared_and_checkpoint_objects_without_reading_them(self):
+        def entry(data):
+            return {'kind': 'file', 'mode': 0o644, 'data': base64.b64encode(data).decode()}
+
+        shared = entry(b'same')
+        record = {
+            'id': '0' * 20 + '-' + 'a' * 32,
+            'before': {'a': shared, 'b': shared.copy()},
+            'before_verification': {'a': entry(b'checkpoint'), 'b': shared.copy()},
+            'after': {'a': shared.copy(), 'b': shared.copy()},
+        }
+        root = Path.cwd()
+        core.save(root, record)
+        unused = objects.write(root, b'unused')
+        object_dir = objects.directory(root)
+        (object_dir / 'ignored.tmp').write_bytes(b'temporary')
+        manifest = core.snapshot_directory(root) / (record['id'] + '.json')
+        manifest_bytes = manifest.stat().st_size
+        original_open = Path.open
+
+        def open_metadata_only(path, *args, **kwargs):
+            self.assertNotEqual(path.parent, object_dir, 'Storage report opened a content object')
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, 'open', open_metadata_only):
+            result = self.runner.invoke(main, ['storage', '--json'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(json.loads(result.output), {
+            'snapshots': {'count': 1, 'bytes': manifest_bytes, 'logical_file_bytes': 30},
+            'objects': {
+                'retained': {'count': 2, 'bytes': 14},
+                'reclaimable': {'count': 1, 'bytes': 6},
+            },
+            'total_bytes': manifest_bytes + 20,
+        })
+        self.assertEqual(objects.collect(root), (1, 6))
+        self.assertTrue((object_dir / unused).exists())
 
     def test_gc_after_retention_preserves_referenced_content(self):
         config = Path('.agentguard/config.toml')
@@ -86,11 +131,14 @@ class ObjectStore(unittest.TestCase):
         path = Path('.agentguard/objects') / objects.digest(b'content')
         path.unlink()
         self.assertNotEqual(self.runner.invoke(main, ['history']).exit_code, 0)
+        self.assertNotEqual(self.runner.invoke(main, ['storage']).exit_code, 0)
         path.symlink_to(Path('a').resolve())
         self.assertNotEqual(self.runner.invoke(main, ['history']).exit_code, 0)
+        self.assertNotEqual(self.runner.invoke(main, ['storage']).exit_code, 0)
 
     def test_gc_respects_session_lock(self):
         name = objects.write(Path.cwd(), b'unused')
         Path('.agentguard/session.lock').touch()
         self.assertNotEqual(self.runner.invoke(main, ['gc']).exit_code, 0)
+        self.assertNotEqual(self.runner.invoke(main, ['storage']).exit_code, 0)
         self.assertTrue((Path('.agentguard/objects') / name).exists())
