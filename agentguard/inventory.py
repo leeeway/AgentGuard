@@ -1,17 +1,31 @@
 """Metadata-only inventory shared by preflight and snapshot capture."""
 import stat
 from fnmatch import fnmatchcase
+from pathlib import PurePosixPath
 
 
-def entries(root, excludes=()):
+def entries(root, excludes=(), *, paths=None):
+    selected = None
+    parents = set()
+    if paths is not None:
+        selected = set()
+        for name in paths:
+            selected.add(name)
+            parents.update(parent.as_posix() for parent in PurePosixPath(name).parents)
+        if not selected:
+            return
+        selected.update(parents)
+
     def visit(directory):
         for path in sorted(directory.iterdir()):
             name = path.relative_to(root).as_posix()
+            if selected is not None and name not in selected:
+                continue
             if path.name in ('.git', '.agentguard') or any(fnmatchcase(name, pattern) for pattern in excludes):
                 continue
             info = path.lstat()
             yield path, info
-            if stat.S_ISDIR(info.st_mode):
+            if stat.S_ISDIR(info.st_mode) and (selected is None or name in parents):
                 yield from visit(path)
     yield from visit(root)
 

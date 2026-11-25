@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 from pathlib import Path
 import sys
 import unittest
@@ -84,6 +85,30 @@ class RedoSessions(unittest.TestCase):
         self.invoke('undo')
         self.assertEqual(Path('a').read_text(), 'before a')
         self.assertEqual(Path('b').read_text(), 'before b')
+
+    def test_undo_and_redo_ignore_workspace_paths_outside_the_operation(self):
+        Path('unrelated').mkdir()
+        Path('unrelated/data').write_bytes(b'before')
+        self.run_script("from pathlib import Path; Path('a').write_text('agent a')")
+        Path('unrelated/data').write_bytes(b'updated elsewhere')
+        os.mkfifo('unrelated/pipe')
+        original_iterdir = Path.iterdir
+
+        def iterdir(path):
+            if path.name == 'unrelated':
+                self.fail('Restore scanned an unrelated subtree')
+            return original_iterdir(path)
+
+        with patch.object(Path, 'iterdir', iterdir):
+            for flags in ((), ('--path', 'a')):
+                self.invoke('undo', '--dry-run', *flags)
+                self.invoke('undo', *flags)
+                self.assertEqual(Path('a').read_text(), 'before a')
+                self.invoke('redo', '--dry-run', *flags)
+                self.invoke('redo', *flags)
+                self.assertEqual(Path('a').read_text(), 'agent a')
+        self.assertEqual(Path('unrelated/data').read_bytes(), b'updated elsewhere')
+        self.assertTrue(Path('unrelated/pipe').is_fifo())
 
     def test_conflicts_refuse_entire_selection_and_preserve_metadata(self):
         self.run_script()

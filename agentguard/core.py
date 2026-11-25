@@ -95,11 +95,11 @@ def dangerous(command, settings):
     return bool(evaluate(command, settings)['matched_rules'])
 
 
-def capture(root, settings=None):
+def capture(root, settings=None, *, paths=None):
     limits = (settings or {}).get('snapshots', {})
     result = {}
     total = 0
-    for path, info in inventory.entries(root, limits.get('exclude', [])):
+    for path, info in inventory.entries(root, limits.get('exclude', []), paths=paths):
         key = path.relative_to(root).as_posix()
         mode = stat.S_IMODE(info.st_mode)
         if stat.S_ISLNK(info.st_mode):
@@ -210,13 +210,13 @@ def restore(root, record, dry_run=False, paths=()):
     if 'after' not in record:
         raise ValueError('Session is incomplete; automatic undo cannot safely check for later edits.')
     before, after = record['before'], record['after']
-    current = capture(root, {'snapshots': {'exclude': record.get('snapshot_excludes', [])}})
     original_changes = changes(before, after)
     restored = set(undone_paths(record))
     expected = _expected_state(record)
     remaining = [key for key in original_changes if key not in restored]
-    touched = _select_paths(before, expected, remaining, paths, current, 'undo')
-    _apply_restore(root, before, expected, touched, current, dry_run, 'Undo')
+    touched = _select_paths(before, expected, remaining, paths, 'undo')
+    _apply_restore(root, before, expected, touched, dry_run, 'Undo',
+                   excludes=record.get('snapshot_excludes', []), selective=bool(paths))
     if dry_run:
         return touched
     record['restored_paths'] = sorted(restored | set(touched))
@@ -243,10 +243,10 @@ def reapply(root, record, dry_run=False, paths=()):
     if not available:
         raise ValueError('Session has no undone paths to redo.')
     expected = _expected_state(record)
-    current = capture(root, {'snapshots': {'exclude': record.get('snapshot_excludes', [])}})
     target = record['after']
-    touched = _select_paths(target, expected, available, paths, current, 'redo')
-    _apply_restore(root, target, expected, touched, current, dry_run, 'Redo')
+    touched = _select_paths(target, expected, available, paths, 'redo')
+    _apply_restore(root, target, expected, touched, dry_run, 'Redo',
+                   excludes=record.get('snapshot_excludes', []), selective=bool(paths))
     if not dry_run:
         record['restored_paths'] = sorted(set(available) - set(touched))
         record['undone'] = False
@@ -268,39 +268,42 @@ def _expected_state(record):
     return expected
 
 
-def _select_paths(before, after, remaining, paths, current, operation):
-    touched = sorted(set(paths)) if paths else remaining
+def _select_paths(before, after, remaining, paths, operation):
+    if not paths:
+        return remaining
+    eligible = set(remaining)
+    touched = sorted(set(paths))
     for key in touched:
-        if key not in remaining:
+        if key not in eligible:
             raise ValueError(('Path is unchanged or already restored: ' if operation == 'undo' else 'Path has not been undone: ') + json.dumps(key))
-        if paths:
-            if any(entry.get(key, {}).get('kind') == 'dir' for entry in (before, after)):
-                raise ValueError(f'Selective {operation} supports files and links; use full {operation} for directory changes.')
-            for parent in Path(key).parents:
-                if str(parent) != '.' and current.get(parent.as_posix(), {}).get('kind') != 'dir':
-                    raise ValueError(f'Selective {operation} requires existing parent directories; use full {operation}.')
+        if any(entry.get(key, {}).get('kind') == 'dir' for entry in (before, after)):
+            raise ValueError(f'Selective {operation} supports files and links; use full {operation} for directory changes.')
     return touched
 
 
-def _apply_restore(root, before, after, touched, current, dry_run, operation):
+def _apply_restore(root, before, after, touched, dry_run, operation, *, excludes, selective):
+    current = capture(root, {'snapshots': {'exclude': excludes}}, paths=touched)
     conflicts = [k for k in touched if current.get(k) != after.get(k)]
+    ancestors = {parent.as_posix() for key in touched for parent in Path(key).parents}
+    ancestors.discard('.')
+    for ancestor in ancestors:
+        if selective and current.get(ancestor, {}).get('kind') != 'dir':
+            name = operation.lower()
+            raise ValueError(f'Selective {name} requires existing parent directories; use full {name}.')
+        if current.get(ancestor) != after.get(ancestor):
+            conflicts.append(ancestor)
+
+    # Check direct children of each directory scheduled for removal, including
+    # content outside the snapshot scope. An unscheduled subtree blocks its parent.
+    scheduled = set(touched)
     for key in touched:
-        for parent in Path(key).parents:
-            if str(parent) == '.':
-                continue
-            ancestor = parent.as_posix()
-            if current.get(ancestor) != after.get(ancestor):
-                conflicts.append(ancestor)
-    # Never remove a directory containing unselected or unrecorded content.
-    for key in touched:
-        if after.get(key, {}).get('kind') == 'dir' and before.get(key, {}).get('kind') != 'dir':
-            conflicts.extend(k for k in current if k.startswith(key + '/') and k not in touched)
-            # Include excluded and protected direct children without reading them.
-            if current.get(key, {}).get('kind') == 'dir':
-                for child in (root / key).iterdir():
-                    name = child.relative_to(root).as_posix()
-                    if name not in touched:
-                        conflicts.append(name)
+        if (after.get(key, {}).get('kind') == 'dir'
+                and before.get(key, {}).get('kind') != 'dir'
+                and current.get(key, {}).get('kind') == 'dir'):
+            for child in (root / key).iterdir():
+                name = child.relative_to(root).as_posix()
+                if name not in scheduled:
+                    conflicts.append(name)
     if conflicts:
         raise RestoreConflict(operation, touched, conflicts)
     if dry_run:

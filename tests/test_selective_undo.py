@@ -98,6 +98,19 @@ class SelectiveUndo(unittest.TestCase):
         self.assertEqual(self.runner.invoke(main, ['undo']).exit_code, 0)
         self.assertFalse(Path('d').exists())
 
+    def test_unknown_subtree_under_nested_directory_blocks_full_undo(self):
+        self.execute("from pathlib import Path; Path('a').write_text('agent a'); "
+                     "Path('d/nested').mkdir(parents=True); Path('d/nested/created').touch()")
+        Path('d/nested/extra').mkdir()
+        Path('d/nested/extra/keep').write_text('later edit')
+
+        result = self.runner.invoke(main, ['undo', '--json'])
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertEqual(json.loads(result.output)['conflicts'], ['d/nested/extra'])
+        self.assertEqual(Path('a').read_text(), 'agent a')
+        self.assertTrue(Path('d/nested/created').exists())
+        self.assertEqual(Path('d/nested/extra/keep').read_text(), 'later edit')
+
     def test_directory_and_missing_parent_require_full_undo(self):
         Path('d').mkdir()
         Path('d/deleted').write_text('original')
