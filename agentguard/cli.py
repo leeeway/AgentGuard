@@ -225,8 +225,11 @@ def _emit_restore_report(operation, record, dry_run, paths, conflicts=()):
 
 
 def _restore_session(apply, operation, root, record, dry_run, paths, as_json):
+    touched = []
     try:
-        touched = apply(root, record, dry_run=dry_run, paths=paths) if record is not None else []
+        if record is not None:
+            loaded = objects.unpack(root, record)
+            touched = apply(root, loaded, dry_run=dry_run, paths=paths)
     except core.RestoreConflict as exc:
         if not as_json:
             raise
@@ -250,7 +253,8 @@ def undo(undo_all, session, dry_run, as_json, paths):
     root = Path.cwd()
     core.config(root)
     with workspace_lock(core.store(root)):
-        record = next((r for r in reversed(core.records(root)) if not r.get('undone')), None)
+        history = core.records(root, contents=False, check_objects=False)
+        record = next((r for r in reversed(history) if not r.get('undone')), None)
         if session is not None and (record is None or record['id'] != session):
             raise click.ClickException('The requested session is not the latest non-undone session.')
         if record is not None and 'after' not in record:
@@ -278,10 +282,10 @@ def redo_command(session, dry_run, as_json, paths):
     root = Path.cwd()
     core.config(root)
     with workspace_lock(core.store(root)):
-        history = core.records(root)
         if session is not None:
-            record = inspection.select(history, session)
+            record = core.load_session_manifest(root, session)
         else:
+            history = core.records(root, contents=False, check_objects=False)
             candidates = [record for record in history if core.undone_paths(record)]
             record = max(candidates, key=lambda r: r.get('last_undo_ns', 0), default=None)
         touched = _restore_session(core.reapply, 'redo', root, record, dry_run, paths, as_json)

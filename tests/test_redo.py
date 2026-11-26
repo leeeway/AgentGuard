@@ -177,6 +177,31 @@ class RedoSessions(unittest.TestCase):
         self.assertEqual(Path('a').read_text(), 'before a')
         self.assertEqual(Path('b').read_text(), 'before b')
 
+    def test_undo_and_redo_load_objects_only_for_the_chosen_session(self):
+        self.run_script("from pathlib import Path; Path('a').write_text('first')")
+        current = self.run_script("from pathlib import Path; Path('a').write_text('second')")
+        older_object = Path('.agentguard/objects') / objects.digest(b'before a')
+        older_object.unlink()
+
+        preview = self.invoke('undo', '--dry-run', '--json')
+        self.assertEqual(json.loads(preview.output)['session'], current['id'])
+        self.invoke('undo')
+        self.assertEqual(Path('a').read_text(), 'first')
+        self.invoke('redo')
+        self.assertEqual(Path('a').read_text(), 'second')
+        self.invoke('undo')
+        self.assertIn('Missing or unsafe snapshot object', self.invoke('undo', code=1).output)
+        self.assertEqual(Path('a').read_text(), 'first')
+
+    def test_explicit_redo_loads_only_the_chosen_manifest(self):
+        self.run_script("from pathlib import Path; Path('a').write_text('earlier')")
+        current = self.run_script("from pathlib import Path; Path('a').write_text('later')")
+        self.invoke('undo')
+        unrelated = min(Path('.agentguard/snapshots').glob('*.json'))
+        unrelated.write_text('damaged manifest')
+        self.invoke('redo', '--session', current['id'])
+        self.assertEqual(Path('a').read_text(), 'later')
+
     def test_repeated_undos_redo_in_dependency_order(self):
         self.run_script("from pathlib import Path; Path('a').write_text('first')")
         self.run_script("from pathlib import Path; Path('a').write_text('second')")

@@ -170,12 +170,13 @@ def load_record(root, path, *, contents=True):
     return record
 
 
-def records(root, *, contents=True):
+def records(root, *, contents=True, check_objects=True):
+    """Load history, optionally deferring object checks for manifest-only selection."""
     history = [
         load_record(root, path, contents=contents)
         for path in sorted(snapshot_directory(root).glob('*.json'))
     ]
-    if not contents:
+    if not contents and check_objects:
         objects.check_references(root, history)
     return history
 
