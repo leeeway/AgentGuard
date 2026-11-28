@@ -13,6 +13,8 @@ import click
 from . import core, runtime, inspection, objects, inventory, diagnostics, processes, audit, privacy, profiles, retention
 from .locking import workspace_lock
 
+SNAPSHOT_CHOICES = ('before', 'before-verification', 'after')
+
 
 class GuardGroup(click.Group):
     def invoke(self, ctx):
@@ -356,6 +358,28 @@ def diff_command(session, phase, as_json, contents, paths):
     core.config(root)
     record = inspection.select(core.records(root, contents=False), session)
     report = inspection.diff_report(record, contents, paths, root=root, phase=phase)
+    _emit_diff(report, as_json, contents)
+
+
+@main.command('compare')
+@click.argument('from_session')
+@click.argument('to_session')
+@click.option('--from-snapshot', type=click.Choice(SNAPSHOT_CHOICES), default='after', show_default=True)
+@click.option('--to-snapshot', type=click.Choice(SNAPSHOT_CHOICES), default='after', show_default=True)
+@click.option('--json', 'as_json', is_flag=True, help='Emit the chosen snapshots and their differences as JSON.')
+@click.option('--contents', is_flag=True, help='Show text contents, which may include secrets.')
+@click.option('--path', 'paths', multiple=True, help='Only show this recorded workspace-relative path; repeatable.')
+def compare_command(from_session, to_session, from_snapshot, to_snapshot, as_json, contents, paths):
+    """Compare saved snapshots by full session ID, without reading workspace files."""
+    root = Path.cwd()
+    source = core.load_session_manifest(root, from_session)
+    target = source if from_session == to_session else core.load_session_manifest(root, to_session)
+    report = inspection.compare_report(source, target, from_snapshot=from_snapshot, to_snapshot=to_snapshot,
+                                       root=root, contents=contents, paths=paths)
+    _emit_diff(report, as_json, contents)
+
+
+def _emit_diff(report, as_json, contents):
     if as_json:
         click.echo(json.dumps(report))
     else:
@@ -364,7 +388,7 @@ def diff_command(session, phase, as_json, contents, paths):
 
 @main.command('show')
 @click.option('--session', help='Full session ID; defaults to the latest recorded session.')
-@click.option('--snapshot', type=click.Choice(['before', 'before-verification', 'after']),
+@click.option('--snapshot', type=click.Choice(SNAPSHOT_CHOICES),
               default='after', show_default=True, help='Select the recorded version of the file.')
 @click.argument('path')
 def show_command(session, snapshot, path):

@@ -101,6 +101,10 @@ Path('artifact').touch()
         self.assertEqual(stage['phase'], 'verification')
         self.assertEqual([(change['path'], change['change']) for change in stage['changes']],
                          [('source', 'modified')])
+        compare = self.runner.invoke(main, ['compare', row['id'], row['id'],
+                                            '--from-snapshot', 'before-verification', '--path', 'source'])
+        self.assertEqual(compare.exit_code, 0, compare.output)
+        self.assertEqual(compare.output, 'modified: "source"\n')
         object_path = objects.directory(Path.cwd()) / objects.digest(b'agent')
         object_path.write_bytes(b'corrupted checkpoint')
         report = self.runner.invoke(main, ['doctor', '--json'])

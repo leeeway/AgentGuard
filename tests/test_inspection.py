@@ -1,3 +1,4 @@
+import base64
 import json
 from pathlib import Path
 import sys
@@ -64,6 +65,49 @@ class Inspection(unittest.TestCase):
         self.assertNotEqual(self.runner.invoke(main, ['diff', '--session', 'missing']).exit_code, 0)
         self.assertNotEqual(self.runner.invoke(main, ['diff', '--path', 'missing']).exit_code, 0)
         self.assertEqual(len(json.loads(self.runner.invoke(main, ['history', '--json', '--limit', '1']).output)), 1)
+
+    def test_compare_reads_only_selected_snapshots_and_changed_contents(self):
+        self.run_script("from pathlib import Path; Path('a').write_text('first'); Path('b').write_text('old')")
+        Path('a').write_text('between runs')
+        Path('b').write_text('also changed')
+        self.run_script("from pathlib import Path; Path('a').write_text('latest')")
+        root = Path.cwd()
+        first, second = core.records(root, contents=False)
+        Path('a').write_text('live edit')
+        (core.snapshot_directory(root) / ('9' * 20 + '-' + 'b' * 32 + '.json')).write_text('invalid')
+        args = ['compare', first['id'], second['id'], '--to-snapshot', 'before', '--path', 'a', '--json']
+        with patch.object(objects, 'read', wraps=objects.read) as read:
+            summary = self.runner.invoke(main, args)
+            self.assertEqual(summary.exit_code, 0, summary.output)
+            read.assert_not_called()
+            detail = self.runner.invoke(main, [*args, '--contents'])
+            self.assertEqual(detail.exit_code, 0, detail.output)
+            self.assertEqual([call.args[1] for call in read.call_args_list],
+                             [objects.digest(b'first'), objects.digest(b'between runs')])
+        report = json.loads(summary.output)
+        self.assertEqual(report['from'], {'session': first['id'], 'snapshot': 'after', 'snapshot_excludes': []})
+        self.assertEqual(report['to'], {'session': second['id'], 'snapshot': 'before', 'snapshot_excludes': []})
+        self.assertEqual([(row['path'], row['change']) for row in report['changes']], [('a', 'modified')])
+        self.assertNotIn('patch', report['changes'][0])
+        self.assertIn('+between runs', json.loads(detail.output)['changes'][0]['patch'])
+        self.assertEqual(Path('a').read_text(), 'live edit')
+
+    def test_compare_recognizes_identical_legacy_and_object_file_contents(self):
+        Path('same').write_bytes(b'unchanged')
+        Path('same').chmod(0o644)
+        Path('mode').write_bytes(b'unchanged')
+        Path('mode').chmod(0o600)
+        legacy_id = '0' * 20 + '-' + 'a' * 32
+        legacy_file = {'kind': 'file', 'mode': 0o644, 'data': base64.b64encode(b'unchanged').decode()}
+        legacy = {'id': legacy_id, 'before': {}, 'after': {'same': legacy_file, 'mode': legacy_file}}
+        folder = core.snapshot_directory(Path.cwd())
+        folder.mkdir()
+        (folder / (legacy_id + '.json')).write_text(json.dumps(legacy))
+        self.run_script('pass')
+        latest = core.records(Path.cwd(), contents=False)[-1]['id']
+        result = self.runner.invoke(main, ['compare', legacy_id, latest])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(result.output, 'modified: "mode"\n')
 
     def test_show_emits_exact_bytes_from_selected_session(self):
         Path('asset').write_bytes(b'original')
@@ -178,6 +222,9 @@ Path('binary').write_bytes(bytes([0]))
         self.assertEqual(row['state'], 'incomplete')
         self.assertIsNone(row['exit_code'])
         self.assertNotEqual(self.runner.invoke(main, ['diff']).exit_code, 0)
+        compare = self.runner.invoke(main, ['compare', record['id'], record['id'], '--from-snapshot', 'before'])
+        self.assertEqual(compare.exit_code, 1, compare.output)
+        self.assertIn('after snapshot is unavailable', compare.output)
 
     def test_empty_history(self):
         self.assertEqual(self.runner.invoke(main, ['history', '--json']).output, '[]\n')

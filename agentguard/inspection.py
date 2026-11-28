@@ -49,12 +49,16 @@ def select(history, session=None):
     return history[-1]
 
 
-def snapshot_file(root, session, snapshot, path):
-    record = core.load_session_manifest(root, session)
+def _snapshot_manifest(record, snapshot):
     field = snapshot.replace('-', '_')
     if field not in record:
-        raise ValueError(f'The {snapshot} snapshot is unavailable for this session.')
-    entry = record[field].get(path)
+        raise ValueError(f"The {snapshot} snapshot is unavailable for session {record['id']}.")
+    return record[field]
+
+
+def snapshot_file(root, session, snapshot, path):
+    record = core.load_session_manifest(root, session)
+    entry = _snapshot_manifest(record, snapshot).get(path)
     if entry is None:
         raise ValueError('File is absent from the selected snapshot: ' + json.dumps(path))
     if entry['kind'] != 'file':
@@ -72,7 +76,37 @@ def diff_report(record, contents=False, paths=(), *, root=None, phase='session')
     start = 'before_verification' if phase == 'verification' else 'before'
     end = 'before_verification' if phase == 'agent' else 'after'
     before, after = record[start], record[end]
-    changed = core.changes(before, after)
+    rows = _change_rows(before, after, core.changes(before, after), contents, paths, root)
+    return {'session': record['id'], 'phase': phase, 'changes': rows}
+
+
+def compare_report(source, target, *, from_snapshot, to_snapshot, root, contents=False, paths=()):
+    before = _snapshot_manifest(source, from_snapshot)
+    after = _snapshot_manifest(target, to_snapshot)
+    changed = [path for path in core.changes(before, after)
+               if not _same_file(before.get(path), after.get(path))]
+    return {
+        'from': {'session': source['id'], 'snapshot': from_snapshot,
+                 'snapshot_excludes': source.get('snapshot_excludes', [])},
+        'to': {'session': target['id'], 'snapshot': to_snapshot,
+               'snapshot_excludes': target.get('snapshot_excludes', [])},
+        'changes': _change_rows(before, after, changed, contents, paths, root),
+    }
+
+
+def _same_file(old, new):
+    if old is None or new is None or old['kind'] != 'file' or new['kind'] != 'file':
+        return False
+    return old['mode'] == new['mode'] and _file_digest(old) == _file_digest(new)
+
+
+def _file_digest(entry):
+    if 'data' in entry:
+        return objects.digest(base64.b64decode(entry['data'], validate=True))
+    return entry['object']
+
+
+def _change_rows(before, after, changed, contents, paths, root):
     changed_paths = set(changed)
     for path in paths:
         if path not in changed_paths:
@@ -88,7 +122,7 @@ def diff_report(record, contents=False, paths=(), *, root=None, phase='session')
         if contents and all(entry is None or entry['kind'] == 'file' for entry in (old, new)):
             row['patch'] = _text_patch(path, old, new, root)
         rows.append(row)
-    return {'session': record['id'], 'phase': phase, 'changes': rows}
+    return rows
 
 
 def _metadata(entry, contents):

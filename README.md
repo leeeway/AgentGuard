@@ -294,6 +294,18 @@ agentguard diff --json --path src/main.py
 
 `diff --json` 返回会话 ID `session`、比较阶段 `phase` 和按路径排序的 `changes` 数组。每条变更包含 `path`、`change`（added、deleted 或 modified）、`before` 和 `after`。前后两侧记录文件类型与适用的权限位，缺失侧为 `null`。无变更时数组为空，指定的 `--path` 在所选阶段无变更时会报错。显式添加 `--contents` 可查看符号链接目标和转义后的文本差异 `patch`，二进制文件的 `patch` 为 `null`。
 
+### 跨会话比较快照
+
+```bash
+agentguard compare "$FIRST_SESSION_ID" "$SECOND_SESSION_ID" --json
+agentguard compare "$FIRST_SESSION_ID" "$SECOND_SESSION_ID" \
+  --from-snapshot before-verification --to-snapshot before --path src/main.py --contents
+```
+
+`compare` 接受两个完整会话 ID，默认比较两次会话的结束快照。两侧均可选 `before`、`before-verification` 或 `after`。默认只读取快照清单，添加 `--contents` 后才读取并校验所选变更的内容对象。旧格式内嵌文件与新版对象按内容和权限比较。
+
+JSON 的 `from` 和 `to` 标明各自的会话、快照阶段和排除规则，`changes` 沿用 `diff` 的结构。新增与删除表示路径在其中一份清单中出现。两次会话采用不同的排除规则时，请结合各自的记录范围解读。
+
 ### 从快照提取单个文件
 
 ```bash
@@ -641,6 +653,7 @@ max_history = 30
 - [x] 验证超时、进程组清理和超时审计
 - [x] 会话历史、JSON 元数据与按路径查看文本差异
 - [x] 基于清单的历史查询、按需读取差异正文与去重校验
+- [x] 跨会话和阶段比较保存的快照
 - [x] 从指定会话和阶段提取单个文件的原始字节
 - [x] 会话决策审计日志、Python/Node.js Hook 事件与 JSON 查询
 - [x] 审计归档日志保留策略、清理预览与快照关联保护
